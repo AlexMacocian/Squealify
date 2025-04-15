@@ -41,7 +41,7 @@ jobs:
         RuntimeIdentifier: win-${{ matrix.targetplatform }}
 
     - name: Build Squealify project
-      run: dotnet build Squealify -c $env:Configuration
+      run: dotnet build Squealify.csproj -c $env:Configuration
 
     - name: Package
       run: dotnet pack -c Release -o . $env:Source_Project_Path
