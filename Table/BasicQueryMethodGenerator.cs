@@ -188,7 +188,7 @@ command.CommandText = @""{placeHolder}"";
             .AppendLine()
             .AppendLine("};");
 
-        var methodBuilder = SyntaxBuilder.CreateMethod($"{Constants.ValueTaskType}<{context.DboType}>", Constants.FindMethodName)
+        var methodBuilder = SyntaxBuilder.CreateMethod($"{Constants.ValueTaskType}<{context.DboType}?>", Constants.FindMethodName)
             .WithModifiers($"{Constants.Public} {Constants.Async}")
             .WithParameter(context.PrimaryKey.PropertyType, Constants.PrimaryKeyArgumentName)
             .WithParameter(Constants.CancellationTokenType, Constants.CancellationTokenArgument)

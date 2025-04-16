@@ -148,7 +148,7 @@ public sealed class TableContextGenerator : IIncrementalGenerator
 
         // Replace placeholders with formatted command text
         var syntax = builder.Build();
-        var source = syntax.ToFullString()
+        var source = $"#nullable enable\n{syntax.ToFullString()}\n#nullable disable"
             .Replace(createMethod.Placeholder, createMethod.CommandText)
             .Replace(createIfNotExistsMethod.Placeholder, createIfNotExistsMethod.CommandText)
             .Replace(insertMethod.Placeholder, insertMethod.CommandText)
