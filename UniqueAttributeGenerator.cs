@@ -16,6 +16,7 @@ public sealed class UniqueAttributeGenerator : IIncrementalGenerator
     {
         var columnUniqueBuilder = SyntaxBuilder.CreateCompilationUnit()
             .WithNamespace(SyntaxBuilder.CreateNamespace(Constants.Namespace)
+            .WithUsing(Constants.UsingSystem)
                 .WithClass(SyntaxBuilder.CreateClass(Constants.ColumnUniqueAttributeName)
                     .WithBaseClass(nameof(Attribute))
                     .WithModifiers($"{Constants.Public} {Constants.Sealed}")
@@ -30,6 +31,7 @@ public sealed class UniqueAttributeGenerator : IIncrementalGenerator
 
         var tableUniqueBuilder = SyntaxBuilder.CreateCompilationUnit()
             .WithNamespace(SyntaxBuilder.CreateNamespace(Constants.Namespace)
+            .WithUsing(Constants.UsingSystem)
                 .WithClass(SyntaxBuilder.CreateClass(Constants.TableUniqueAttributeName)
                     .WithBaseClass(nameof(Attribute))
                     .WithModifiers($"{Constants.Public} {Constants.Sealed}")

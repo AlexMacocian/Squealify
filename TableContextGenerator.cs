@@ -66,7 +66,12 @@ public sealed class TableContextGenerator : IIncrementalGenerator
         var contextClassName = $"{classDeclarationSyntax.Identifier.ValueText}TableContextBase";
         var usingsSet = new HashSet<string>
         {
-            Constants.UsingSystemDataCommon
+            Constants.UsingSystem,
+            Constants.UsingSystemDataCommon,
+            Constants.UsingSystemRuntimeCompilerServices,
+            Constants.UsingSystemCollectionsGeneric,
+            Constants.UsingSystemThreadingTasks,
+            Constants.UsingSystemThreading
         };
 
         // Add the namespace of the class declaration (if any)
@@ -122,6 +127,7 @@ public sealed class TableContextGenerator : IIncrementalGenerator
         var updateMethod = BasicQueryMethodGenerator.CreateUpdateStatement(ctx);
         var deleteMethod = BasicQueryMethodGenerator.CreateDeleteStatement(ctx);
         var findMethod = BasicQueryMethodGenerator.CreateFindStatement(ctx);
+        var findAllMethod = BasicQueryMethodGenerator.CreateFindAllStatement(ctx);
         classBuilder
             .WithMethod(createMethod.MethodBuilder)
             .WithMethod(createIfNotExistsMethod.MethodBuilder)
@@ -130,6 +136,7 @@ public sealed class TableContextGenerator : IIncrementalGenerator
             .WithMethod(updateMethod.MethodBuilder)
             .WithMethod(deleteMethod.MethodBuilder)
             .WithMethod(findMethod.MethodBuilder)
+            .WithMethod(findAllMethod.MethodBuilder)
             .WithMethod(CreateParameterMethodGenerator.CreateParameterMethod());
 
         // Generate conversion properties
@@ -155,7 +162,8 @@ public sealed class TableContextGenerator : IIncrementalGenerator
             .Replace(upsertMethod.Placeholder, upsertMethod.CommandText)
             .Replace(updateMethod.Placeholder, updateMethod.CommandText)
             .Replace(deleteMethod.Placeholder, deleteMethod.CommandText)
-            .Replace(findMethod.Placeholder, findMethod.CommandText);
+            .Replace(findMethod.Placeholder, findMethod.CommandText)
+            .Replace(findAllMethod.Placeholder, findAllMethod.CommandText);
 
         sourceProductionContext.AddSource($"{contextClassName}.g.cs", source);
     }

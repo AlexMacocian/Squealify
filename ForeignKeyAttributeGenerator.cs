@@ -16,6 +16,7 @@ public sealed class ForeignKeyAttributeGenerator : IIncrementalGenerator
     {
         var builder = SyntaxBuilder.CreateCompilationUnit()
             .WithNamespace(SyntaxBuilder.CreateNamespace(Constants.Namespace)
+            .WithUsing(Constants.UsingSystem)
                 .WithClass(SyntaxBuilder.CreateClass(Constants.ForeignKeyAttributeName)
                     .WithBaseClass(nameof(Attribute))
                     .WithModifiers($"{Constants.Public} {Constants.Sealed}")

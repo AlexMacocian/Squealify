@@ -197,6 +197,65 @@ command.CommandText = @""{placeHolder}"";
         return new MethodWithSqlStatement(methodBuilder, placeHolder, sql.ToString());
     }
 
+    public static MethodWithSqlStatement CreateFindAllStatement(TableContext context)
+    {
+        var placeHolder = $"FindAll{context.DboType}";
+        var sql = new StringBuilder();
+        sql.AppendLine()
+            .AppendLine($"\t\t\tSELECT * FROM {context.TableName};");
+
+        var bodyBuilder = new StringBuilder(@$"
+using var command = this.{Constants.DbConnectionPropertyName}.CreateCommand();
+command.CommandText = @""{placeHolder}"";
+");
+
+        if (!DataTypeMappings.DataTypeToString.TryGetValue(context.PrimaryKey.Type, out var convertedType))
+        {
+            throw new InvalidOperationException($"Unable to find conversion for {context.PrimaryKey.Type}");
+        }
+
+        bodyBuilder.AppendLine($"using var reader = await command.ExecuteReaderAsync({Constants.CancellationTokenArgument});");
+        bodyBuilder.AppendLine($"while (await reader.ReadAsync({Constants.CancellationTokenArgument}))");
+        bodyBuilder.AppendLine("{");
+        bodyBuilder.AppendLine($"yield return new {context.DboType}");
+        bodyBuilder.AppendLine("{");
+        foreach ((var index, var fieldContext) in context.Fields.Select((f, i) => (i, f)))
+        {
+            if (!DataTypeMappings.DataTypeToString.TryGetValue(fieldContext.Type, out var convertedFieldType))
+            {
+                continue;
+            }
+
+            (_, var convertFromName) = SyntaxParsers.GetConversionNames(fieldContext.PropertyType, convertedFieldType);
+
+            var fieldValueProvider = fieldContext.RequiresConversion
+                ? $"this.{convertFromName}({GetReaderMethod("reader", fieldContext)}({index}))"
+                : $"{GetReaderMethod("reader", fieldContext)}({index})";
+
+            var nullCheckGuardedProvider = fieldContext.IsNullable
+                ? $"await reader.IsDBNullAsync({index}, {Constants.CancellationTokenArgument}) ? default : {fieldValueProvider}"
+                : fieldValueProvider;
+
+            bodyBuilder.Append($"{fieldContext.PropertyName} = {nullCheckGuardedProvider}");
+            if (index < context.Fields.Length - 1)
+            {
+                bodyBuilder.AppendLine(",");
+            }
+        }
+        bodyBuilder
+            .AppendLine()
+            .AppendLine("};")
+            .AppendLine("}");
+
+        var methodBuilder = SyntaxBuilder.CreateMethod($"{Constants.IAsyncEnumerableType}<{context.DboType}>", Constants.FindAllMethodName)
+            .WithModifiers($"{Constants.Public} {Constants.Async}")
+            .WithParameter(context.PrimaryKey.PropertyType, Constants.PrimaryKeyArgumentName)
+            .WithParameter($"[{Constants.EnumeratorCancellationAttribute}] {Constants.CancellationTokenType}", Constants.CancellationTokenArgument)
+            .WithBody(bodyBuilder.ToString());
+
+        return new MethodWithSqlStatement(methodBuilder, placeHolder, sql.ToString());
+    }
+
     private static string GenerateFullBody(string placeHolder, TableContext context)
     {
         var bodyBuilder = new StringBuilder(@$"

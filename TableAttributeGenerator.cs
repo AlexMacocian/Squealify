@@ -16,6 +16,7 @@ public sealed class TableAttributeGenerator : IIncrementalGenerator
     {
         var builder = SyntaxBuilder.CreateCompilationUnit()
             .WithNamespace(SyntaxBuilder.CreateNamespace(Constants.Namespace)
+            .WithUsing(Constants.UsingSystem)
                 .WithClass(SyntaxBuilder.CreateClass(Constants.TableAttributeName)
                     .WithBaseClass(nameof(Attribute))
                     .WithModifiers($"{Constants.Public} {Constants.Sealed}")

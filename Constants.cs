@@ -21,6 +21,8 @@ public static class Constants
     public const string DbCommandType = "DbCommand";
     public const string FuncType = "Func";
     public const string NullableObject = "object?";
+    public const string IAsyncEnumerableType = "IAsyncEnumerable";
+    public const string EnumeratorCancellationAttribute = "EnumeratorCancellation";
 
     public const string PrimaryKey = "PRIMARY KEY";
     public const string ForeignKey = "FOREIGN KEY";
@@ -32,7 +34,12 @@ public static class Constants
 
     public const string Namespace = "Squealify";
 
+    public const string UsingSystem = "System";
     public const string UsingSystemDataCommon = "System.Data.Common";
+    public const string UsingSystemRuntimeCompilerServices = "System.Runtime.CompilerServices";
+    public const string UsingSystemCollectionsGeneric = "System.Collections.Generic";
+    public const string UsingSystemThreadingTasks = "System.Threading.Tasks";
+    public const string UsingSystemThreading = "System.Threading";
 
     public const string CancellationTokenArgument = "cancellationToken";
 
@@ -93,4 +100,5 @@ public static class Constants
     public const string UpdateMethodName = "Update";
     public const string DeleteMethodName = "Delete";
     public const string FindMethodName = "Find";
+    public const string FindAllMethodName = "FindAll";
 }
