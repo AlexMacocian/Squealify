@@ -249,7 +249,6 @@ command.CommandText = @""{placeHolder}"";
 
         var methodBuilder = SyntaxBuilder.CreateMethod($"{Constants.IAsyncEnumerableType}<{context.DboType}>", Constants.FindAllMethodName)
             .WithModifiers($"{Constants.Public} {Constants.Async}")
-            .WithParameter(context.PrimaryKey.PropertyType, Constants.PrimaryKeyArgumentName)
             .WithParameter($"[{Constants.EnumeratorCancellationAttribute}] {Constants.CancellationTokenType}", Constants.CancellationTokenArgument)
             .WithBody(bodyBuilder.ToString());
 
