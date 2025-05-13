@@ -126,6 +126,7 @@ public sealed class TableContextGenerator : IIncrementalGenerator
         var upsertMethod = BasicQueryMethodGenerator.CreateUpsertStatement(ctx);
         var updateMethod = BasicQueryMethodGenerator.CreateUpdateStatement(ctx);
         var deleteMethod = BasicQueryMethodGenerator.CreateDeleteStatement(ctx);
+        var deleteAllMethod = BasicQueryMethodGenerator.CreateDeleteAllStatement(ctx);
         var findMethod = BasicQueryMethodGenerator.CreateFindStatement(ctx);
         var findAllMethod = BasicQueryMethodGenerator.CreateFindAllStatement(ctx);
         classBuilder
@@ -136,6 +137,7 @@ public sealed class TableContextGenerator : IIncrementalGenerator
             .WithMethod(updateMethod.MethodBuilder)
             .WithMethod(deleteMethod.MethodBuilder)
             .WithMethod(findMethod.MethodBuilder)
+            .WithMethod(deleteAllMethod.MethodBuilder)
             .WithMethod(findAllMethod.MethodBuilder)
             .WithMethod(CreateParameterMethodGenerator.CreateParameterMethod());
 
@@ -162,6 +164,7 @@ public sealed class TableContextGenerator : IIncrementalGenerator
             .Replace(upsertMethod.Placeholder, upsertMethod.CommandText)
             .Replace(updateMethod.Placeholder, updateMethod.CommandText)
             .Replace(deleteMethod.Placeholder, deleteMethod.CommandText)
+            .Replace(deleteAllMethod.Placeholder, deleteAllMethod.CommandText)
             .Replace(findMethod.Placeholder, findMethod.CommandText)
             .Replace(findAllMethod.Placeholder, findAllMethod.CommandText);
 

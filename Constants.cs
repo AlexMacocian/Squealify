@@ -99,6 +99,7 @@ public static class Constants
     public const string UpsertMethodName = "Upsert";
     public const string UpdateMethodName = "Update";
     public const string DeleteMethodName = "Delete";
+    public const string DeleteAllMethodName = "DeleteAll";
     public const string FindMethodName = "Find";
     public const string FindAllMethodName = "FindAll";
 }

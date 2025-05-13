@@ -133,6 +133,27 @@ command.CommandText = @""{placeHolder}"";
         return new MethodWithSqlStatement(methodBuilder, placeHolder, sql.ToString());
     }
 
+    public static MethodWithSqlStatement CreateDeleteAllStatement(TableContext context)
+    {
+        var placeHolder = $"DeleteAll{context.DboType}";
+        var sql = new StringBuilder();
+        sql.AppendLine()
+            .AppendLine($"\t\t\tDELETE FROM {context.TableName};");
+
+        var bodyBuilder = new StringBuilder(@$"
+using var command = this.{Constants.DbConnectionPropertyName}.CreateCommand();
+command.CommandText = @""{placeHolder}"";
+");
+        bodyBuilder.AppendLine("await command.ExecuteNonQueryAsync(cancellationToken);");
+
+        var methodBuilder = SyntaxBuilder.CreateMethod(Constants.ValueTaskType, Constants.DeleteAllMethodName)
+            .WithModifiers($"{Constants.Public} {Constants.Async}")
+            .WithParameter(Constants.CancellationTokenType, Constants.CancellationTokenArgument)
+            .WithBody(bodyBuilder.ToString());
+
+        return new MethodWithSqlStatement(methodBuilder, placeHolder, sql.ToString());
+    }
+
     public static MethodWithSqlStatement CreateFindStatement(TableContext context)
     {
         var placeHolder = $"Find{context.DboType}";
