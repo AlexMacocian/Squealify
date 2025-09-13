@@ -17,7 +17,7 @@ jobs:
 
     env:
       Configuration: Release
-      Solution_Path: Squealify.sln
+      Solution_Path: Squealify.slnx
       Source_Project_Path: Squealify.csproj
       Actions_Allow_Unsecure_Commands: true
 
