@@ -24,7 +24,7 @@
     </PackageReference>
     <!-- 5.0.0 is the compiler shipped with .NET 10.0.1xx SDKs; newer versions fail to load there (CS9057). -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" PrivateAssets="all" />
-    <PackageReference Include="Sybil" Version="0.9.0-local.3" PrivateAssets="all" />
+    <PackageReference Include="Sybil" Version="0.9.0" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
