@@ -30,7 +30,7 @@ jobs:
     - name: Install .NET Core
       uses: actions/setup-dotnet@v1
       with:
-        dotnet-version: '9.0.x'
+        dotnet-version: '10.0.x'
 
     - name: Setup MSBuild.exe
       uses: microsoft/setup-msbuild@v1.0.1
@@ -42,6 +42,9 @@ jobs:
 
     - name: Build Squealify project
       run: dotnet build Squealify.csproj -c $env:Configuration
+
+    - name: Test
+      run: dotnet test Squealify.Tests/Squealify.Tests.csproj -c $env:Configuration
 
     - name: Package
       run: dotnet pack -c Release -o . $env:Source_Project_Path

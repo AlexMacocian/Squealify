@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MSTest" Version="4.5.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Runs the generators on this project, and references the generator assembly for driver based tests. -->
+    <ProjectReference Include="..\Squealify.Abstractions\Squealify.Abstractions.csproj" />
+    <ProjectReference Include="..\Squealify.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
+    <Analyzer Include="..\bin\$(Configuration)\netstandard2.0\Sybil.dll" />
+    <Reference Include="..\bin\$(Configuration)\netstandard2.0\Sybil.dll" />
+  </ItemGroup>
+
+</Project>

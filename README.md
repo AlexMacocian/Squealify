@@ -1,278 +1,145 @@
 # Squealify
 
-Squealify is a lightweight, compile-time micro-ORM for .NET that generates database query methods based on schema classes. It leverages C# source generators to create strongly-typed, efficient, and maintainable database access code.
+Compile-time micro-ORM for ADO.NET. A source generator turns schema classes into table contexts with SQL and row mapping generated at build time. No reflection, NativeAOT compatible.
 
-## Features
-
-- **Compile-Time Query Generation**: Automatically generates database query methods (e.g., `Create`, `Insert`, `Upsert`, `Update`, `Delete`, `Find`) based on your schema class.
-- **Schema-Driven**: Define your database schema using attributes like `[Table]`, `[PrimaryKey]`, and `[ColumnUnique]`.
-- **Nullable support**: Supports nullable properties and types, allowing for flexible schema definitions. Define properties as nullable in your schema and Squealify will generate nullable columns.
-- **Type Safety**: Strongly-typed query methods ensure compile-time safety.
-- **Custom Conversions**: Supports custom type conversions for complex types. Automatically detects complex types and forces you to implement the conversion on compilation.
-- **Minimal Boilerplate**: Focus on your schema, and let Squealify handle the rest.
+The package contains the generator (`analyzers/`) and `Squealify.Abstractions` (`lib/`), which holds the attributes and enums shared by all consuming assemblies.
 
 ## Installation
 
-Add Squealify to your project via NuGet:
-
 `dotnet add package Squealify`
 
-## Getting Started
-
-### Step 1: Define Your Schema Class
-
-Define a class that represents your database table. Use attributes to specify table and column metadata.
+## Example
 
 ```csharp
-[Table("accounts")]
-[TableUnique(nameof(Name), nameof(Id))]
-public sealed class AccountDBO
+[Table("characters")]
+[TableIndex(nameof(AccountId), nameof(GameMode))]
+[TableUnique(nameof(FirstName), nameof(LastName))]
+public sealed class CharacterDbo
 {
     [PrimaryKey]
-    public required AccountIdentifier Id { get; init; }
+    [AutoIncrement]
+    public long Id { get; init; }
 
-    [ForeignKey("secondaryTable", "id")]
-    public required Identifier Secondary { get; init; }
-    
-    [ColumnUnique]
-    public required string Name { get; init; }
+    [ForeignKey("accounts", "Id", OnDelete = ForeignKeyAction.Cascade)]
+    public int AccountId { get; set; }
 
-    [ColumnName("password")]
-    public string? PasswordHash { get; set; }
-    public string? Email { get; set; }
-    public DateTimeOffset? EmailVerifiedTime { get; set; }
-
-    public AccountType? State { get; set; }
-
-    public DateTimeOffset? CreatedTime { get; set; }
-    public DateTimeOffset? LastLoginTime { get; set; }
+    public required string FirstName { get; set; }
+    public required string LastName { get; set; }
+    public int GameMode { get; set; }
 }
+
+public sealed class CharacterContext(DbConnection connection, SqlDialect dialect)
+    : CharacterDboTableContextBase(connection, dialect);
 ```
 
-### Step 2: Squealify generates your db context
 ```csharp
-public abstract class AccountDBOTableContextBase
-{
-    public AccountDBOTableContextBase(DbConnection connection)
-    {
-        this.Connection = connection;
-    }
-
-    protected DbConnection Connection { get; }
-    protected abstract Func<AccountIdentifier, string> AccountIdentifierToStringConverter { get; }
-    protected abstract Func<string, AccountIdentifier> StringToAccountIdentifierConverter { get; }
-    protected abstract Func<Identifier, string> IdentifierToStringConverter { get; }
-    protected abstract Func<string, Identifier> StringToIdentifierConverter { get; }
-
-    public async ValueTask CreateTable(CancellationToken cancellationToken)
-    {
-        using var command = this.Connection.CreateCommand();
-        command.CommandText = @"
-			CREATE TABLE accounts (
-				Id TEXT PRIMARY KEY,
-				Secondary TEXT NOT NULL REFERENCES secondaryTable(id),
-				Name TEXT UNIQUE NOT NULL,
-				password TEXT,
-				Email TEXT,
-				EmailVerifiedTime TIMESTAMP,
-				State INTEGER,
-				CreatedTime TIMESTAMP,
-				LastLoginTime TIMESTAMP,
-				UNIQUE (Name, Id));
-";
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async ValueTask CreateTableIfNotExists(CancellationToken cancellationToken)
-    {
-        using var command = this.Connection.CreateCommand();
-        command.CommandText = @"
-			CREATE TABLE IF NOT EXISTS accounts (
-				Id TEXT PRIMARY KEY,
-				Secondary TEXT NOT NULL REFERENCES secondaryTable(id),
-				Name TEXT UNIQUE NOT NULL,
-				password TEXT,
-				Email TEXT,
-				EmailVerifiedTime TIMESTAMP,
-				State INTEGER,
-				CreatedTime TIMESTAMP,
-				LastLoginTime TIMESTAMP,
-				UNIQUE (Name, Id));
-";
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async ValueTask Insert(AccountDBO dbo, CancellationToken cancellationToken)
-    {
-        using var command = this.Connection.CreateCommand();
-        command.CommandText = @"
-			INSERT INTO accounts
-				(Id, Secondary, Name, password, Email, EmailVerifiedTime, State, CreatedTime, LastLoginTime)
-			VALUES
-				(@Id, @Secondary, @Name, @password, @Email, @EmailVerifiedTime, @State, @CreatedTime, @LastLoginTime)
-";
-        command.Parameters.Add(this.CreateParameter(command, "@Id", this.AccountIdentifierToStringConverter(dbo.Id)));
-        command.Parameters.Add(this.CreateParameter(command, "@Secondary", this.IdentifierToStringConverter(dbo.Secondary)));
-        command.Parameters.Add(this.CreateParameter(command, "@Name", dbo.Name));
-        command.Parameters.Add(this.CreateParameter(command, "@password", dbo.PasswordHash));
-        command.Parameters.Add(this.CreateParameter(command, "@Email", dbo.Email));
-        command.Parameters.Add(this.CreateParameter(command, "@EmailVerifiedTime", dbo.EmailVerifiedTime));
-        command.Parameters.Add(this.CreateParameter(command, "@State", dbo.State));
-        command.Parameters.Add(this.CreateParameter(command, "@CreatedTime", dbo.CreatedTime));
-        command.Parameters.Add(this.CreateParameter(command, "@LastLoginTime", dbo.LastLoginTime));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async ValueTask Upsert(AccountDBO dbo, CancellationToken cancellationToken)
-    {
-        using var command = this.Connection.CreateCommand();
-        command.CommandText = @"
-			INSERT INTO accounts
-				(Id, Secondary, Name, password, Email, EmailVerifiedTime, State, CreatedTime, LastLoginTime)
-			VALUES
-				(@Id, @Secondary, @Name, @password, @Email, @EmailVerifiedTime, @State, @CreatedTime, @LastLoginTime)
-			ON CONFLICT(Id) DO UPDATE SET
-				Secondary = excluded.Secondary,
-				Name = excluded.Name,
-				password = excluded.password,
-				Email = excluded.Email,
-				EmailVerifiedTime = excluded.EmailVerifiedTime,
-				State = excluded.State,
-				CreatedTime = excluded.CreatedTime,
-				LastLoginTime = excluded.LastLoginTime;
-";
-        command.Parameters.Add(this.CreateParameter(command, "@Id", this.AccountIdentifierToStringConverter(dbo.Id)));
-        command.Parameters.Add(this.CreateParameter(command, "@Secondary", this.IdentifierToStringConverter(dbo.Secondary)));
-        command.Parameters.Add(this.CreateParameter(command, "@Name", dbo.Name));
-        command.Parameters.Add(this.CreateParameter(command, "@password", dbo.PasswordHash));
-        command.Parameters.Add(this.CreateParameter(command, "@Email", dbo.Email));
-        command.Parameters.Add(this.CreateParameter(command, "@EmailVerifiedTime", dbo.EmailVerifiedTime));
-        command.Parameters.Add(this.CreateParameter(command, "@State", dbo.State));
-        command.Parameters.Add(this.CreateParameter(command, "@CreatedTime", dbo.CreatedTime));
-        command.Parameters.Add(this.CreateParameter(command, "@LastLoginTime", dbo.LastLoginTime));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async ValueTask Update(AccountDBO dbo, CancellationToken cancellationToken)
-    {
-        using var command = this.Connection.CreateCommand();
-        command.CommandText = @"
-			UPDATE accounts
-			SET
-				Secondary = @Secondary,
-				Name = @Name,
-				password = @password,
-				Email = @Email,
-				EmailVerifiedTime = @EmailVerifiedTime,
-				State = @State,
-				CreatedTime = @CreatedTime,
-				LastLoginTime = @LastLoginTime
-			WHERE
-				Id = @Id;
-";
-        command.Parameters.Add(this.CreateParameter(command, "@Id", this.AccountIdentifierToStringConverter(dbo.Id)));
-        command.Parameters.Add(this.CreateParameter(command, "@Secondary", this.IdentifierToStringConverter(dbo.Secondary)));
-        command.Parameters.Add(this.CreateParameter(command, "@Name", dbo.Name));
-        command.Parameters.Add(this.CreateParameter(command, "@password", dbo.PasswordHash));
-        command.Parameters.Add(this.CreateParameter(command, "@Email", dbo.Email));
-        command.Parameters.Add(this.CreateParameter(command, "@EmailVerifiedTime", dbo.EmailVerifiedTime));
-        command.Parameters.Add(this.CreateParameter(command, "@State", dbo.State));
-        command.Parameters.Add(this.CreateParameter(command, "@CreatedTime", dbo.CreatedTime));
-        command.Parameters.Add(this.CreateParameter(command, "@LastLoginTime", dbo.LastLoginTime));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async ValueTask Delete(AccountIdentifier primaryKey, CancellationToken cancellationToken)
-    {
-        using var command = this.Connection.CreateCommand();
-        command.CommandText = @"
-			DELETE FROM accounts
-			WHERE Id = @Id;
-";
-        command.Parameters.Add(this.CreateParameter(command, "@Id", this.AccountIdentifierToStringConverter(primaryKey)));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async ValueTask<AccountDBO> Find(AccountIdentifier primaryKey, CancellationToken cancellationToken)
-    {
-        using var command = this.Connection.CreateCommand();
-        command.CommandText = @"
-			SELECT * FROM accounts
-			WHERE Id = @Id;
-";
-        command.Parameters.Add(this.CreateParameter(command, "@Id", this.AccountIdentifierToStringConverter(primaryKey)));
-        using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-            return default;
-        return new AccountDBO
-        {
-        Id = this.StringToAccountIdentifierConverter(reader.GetString(0)) , 
-        Secondary = this.StringToIdentifierConverter(reader.GetString(1)) , 
-        Name = reader.GetString(2) , 
-        PasswordHash = await reader.IsDBNullAsync(3, cancellationToken) ? default : reader.GetString(3) , 
-        Email = await reader.IsDBNullAsync(4, cancellationToken) ? default : reader.GetString(4) , 
-        EmailVerifiedTime = await reader.IsDBNullAsync(5, cancellationToken) ? default : (DateTimeOffset? )reader.GetDateTime(5) , 
-        State = await reader.IsDBNullAsync(6, cancellationToken) ? default : (AccountType? )reader.GetInt32(6) , 
-        CreatedTime = await reader.IsDBNullAsync(7, cancellationToken) ? default : (DateTimeOffset? )reader.GetDateTime(7) , 
-        LastLoginTime = await reader.IsDBNullAsync(8, cancellationToken) ? default : (DateTimeOffset? )reader.GetDateTime(8) } ; 
-    }
-
-    protected DbParameter CreateParameter(DbCommand command, string name, object? value)
-    {
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = name;
-        parameter.Value = value ?? DBNull.Value;
-        return parameter;
-    }
-}
-```
-
-
-### Step 3: Implement the Context
-
-Create an implementation of the generated context and provide any required custom type converters.
-Squealify generates basic queries and statements based on your schema.
-
-```csharp
-public sealed class AccountsContext(DbConnection connection) : AccountDBOTableContextBase(connection)
-{
-    protected override Func<AccountIdentifier, string> AccountIdentifierToStringConverter { get; } = (identifier) => identifier.ToString();
-    protected override Func<string, AccountIdentifier> StringToAccountIdentifierConverter { get; } = Identifier.ParseIdentifier<AccountIdentifier>;
-    protected override Func<Identifier, string> IdentifierToStringConverter { get; } = (identifier) => identifier.ToString();
-    protected override Func<string, Identifier> StringToIdentifierConverter { get; } = Identifier.ParseIdentifier<AccountIdentifier>;
-}
-```
-
-
-### Step 4: Use the Context
-
-Use the context in your application to interact with the database.
-
-```csharp
-var accountsContext = scope.ServiceProvider.GetRequiredService<AccountsContext>();
-await accountsContext.CreateTableIfNotExists(cancellationToken);
-await accountsContext.Upsert(new Models.AccountDBO { Id = Identifier.Create<AccountIdentifier>(), Secondary = Identifier.Create<AccountIdentifier>(), Name = "Test", PasswordHash = "1234" }, cancellationToken);
-await accountsContext.Find(Identifier.ParseIdentifier<AccountIdentifier>("1234"), cancellationToken);
+await using var characters = new CharacterContext(connection, SqlDialect.SQLite);
+await characters.CreateTableIfNotExists(cancellationToken);
+var id = await characters.Insert(new CharacterDbo { AccountId = 1, FirstName = "Arisen", LastName = "One" }, cancellationToken);
+var character = await characters.FindByFirstNameAndLastName("Arisen", "One", cancellationToken);
+await foreach (var c in characters.FindByAccountIdAndGameMode(1, 0, cancellationToken)) { }
 ```
 
 ## Attributes
-Squealify provides the following attributes to define your schema:
 
-- `[Table(string name)]`: Specifies the table name.
-- `[PrimaryKey]`: Marks a property as the primary key.
-- `[ForeignKey(string referenceTable, string referenceField)]`: Defines a foreign key relationship.
-- `[ColumnUnique]`: Marks a property as unique.
-- `[TableUnique]`: Defines a table unique that can be a combination of any columns.
-- `[Varchar(int length)]`: Specifies a `VARCHAR` column with a maximum length.
+| Attribute | Target | Effect |
+|---|---|---|
+| `[Table(name)]` | class | Table name (defaults to the class name) |
+| `[PrimaryKey]` | property | Primary key column; multiple properties form a composite key |
+| `[AutoIncrement]` | property | Database generated key; single `int`/`long` primary key only |
+| `[ColumnName(name)]` | property | Column name (defaults to the property name) |
+| `[ColumnUnique]` | property | `UNIQUE` column; generates `FindBy{Column}` returning one row |
+| `[Varchar(length)]` | property | `VARCHAR(length)` instead of `TEXT` |
+| `[ForeignKey(table, column, OnDelete = ...)]` | property | Single column foreign key |
+| `[TableForeignKey(table, columns, referenceColumns, OnDelete = ...)]` | class | Composite foreign key |
+| `[TableUnique(columns...)]` | class | `UNIQUE` constraint; generates `FindBy{Columns}` returning one row |
+| `[TableIndex(columns...)]` | class | Index; generates `FindBy{Columns}` (all rows) and `DeleteBy{Columns}` |
+| `[TableQuery(columns...)]` | class | `FindBy{Columns}` and `DeleteBy{Columns}` without an index (e.g. primary key prefixes) |
 
-## Supported Queries
+Columns in class level attributes accept property names (`nameof`) or column names.
 
-The following methods are generated for each schema:
+## Generated members
 
-- `CreateTable`
-- `CreateTableIfNotExists`
-- `Insert`
-- `Upsert`
-- `Update`
-- `Delete`
-- `Find`
+| Member | Notes |
+|---|---|
+| `CreateTable`, `CreateTableIfNotExists` | DDL for the context's `SqlDialect`, including indexes |
+| `Insert`, `InsertMany` | `Insert` returns the generated key for `[AutoIncrement]` tables |
+| `Upsert`, `UpsertMany` | `INSERT ... ON CONFLICT (primary key) DO UPDATE` (`DO NOTHING` for key-only tables) |
+| `Update`, `UpdateMany` | Returns affected rows; not generated for key-only tables |
+| `Delete(keys...)`, `DeleteMany`, `DeleteAll` | Returns affected rows |
+| `Find(keys...)`, `FindAll` | |
+| `FindBy...`, `DeleteBy...` | From `[ColumnUnique]`, `[TableUnique]`, `[TableIndex]`, `[TableQuery]` |
+| `ReadRow`, `CreateCommand`, `TableName`, `SelectColumns` | For custom queries in the derived context |
+| `Transaction` | Assigned to every command the context executes |
+| `CreateParameter<T>`, `SetParameterValue<T>` | Virtual; override to use typed provider parameters |
+
+Contexts implement `IDisposable` and `IAsyncDisposable`, own their cached commands, and are not thread safe (one per connection).
+
+## Performance
+
+| Mechanism | Detail |
+|---|---|
+| Command caching | One prepared command per statement, parameters created once and reused |
+| Multi-row statements | `*Many` methods send chunks of up to 64 rows per statement (`VALUES (...), (...)` / `IN (...)`), then 8, then 1 |
+| No boxing (provider permitting) | Values flow through `SetParameterValue<T>`; override with e.g. `NpgsqlParameter<T>.TypedValue` |
+| Typed reads | Rows are read with typed getters (`GetInt32`, `GetFieldValue<T>`) |
+
+`UpsertMany` rows must have unique keys within one call (PostgreSQL rejects a statement that updates a row twice).
+
+`Upsert` with explicit values on an `[AutoIncrement]` table does not advance the PostgreSQL identity sequence; later `Insert` calls can then collide.
+
+## Type mapping
+
+| CLR type | Parameter type | SQLite | PostgreSQL |
+|---|---|---|---|
+| `bool` | `bool` | `BOOLEAN` | `BOOLEAN` |
+| `byte`, `sbyte`, `short` | `short` | `SMALLINT` | `SMALLINT` |
+| `ushort`, `int` | `int` | `INTEGER` | `INTEGER` |
+| `uint`, `long` | `long` | `BIGINT` | `BIGINT` |
+| `ulong` | `long` (bit preserving) | `BIGINT` | `BIGINT` |
+| `float` | `float` | `REAL` | `REAL` |
+| `double` | `double` | `REAL` | `DOUBLE PRECISION` |
+| `decimal` | `decimal` | `TEXT` | `NUMERIC` |
+| `char`, `string` | `string` | `TEXT` / `VARCHAR(n)` | `TEXT` / `VARCHAR(n)` |
+| `Guid` | `Guid` | `BLOB` | `UUID` |
+| `DateTime` | `DateTime` (UTC expected) | `TEXT` | `TIMESTAMPTZ` |
+| `DateTimeOffset` | `DateTimeOffset` (stored as UTC) | `TEXT` | `TIMESTAMPTZ` |
+| `DateOnly`, `TimeOnly`, `TimeSpan` | same | `TEXT` | `DATE`, `TIME`, `INTERVAL` |
+| `byte[]` | `byte[]` | `BLOB` | `BYTEA` |
+| enums | per underlying type | per underlying type | per underlying type |
+| other types | `string` via abstract `{Type}ToStringConverter` / `StringTo{Type}Converter` | `TEXT` | `TEXT` |
+
+Nullable properties (`int?`, `string?`) map to nullable columns.
+
+## Diagnostics
+
+| Id | Meaning |
+|---|---|
+| SQF001 | Table has no `[PrimaryKey]` |
+| SQF002 | `[AutoIncrement]` is not the single `int`/`long` primary key |
+| SQF003 | Unknown column in a class level attribute |
+| SQF004 | `[TableForeignKey]` column count mismatch |
+
+## Notes
+
+| Topic | Detail |
+|---|---|
+| SQLite foreign keys | Require `PRAGMA foreign_keys = ON;` per connection |
+| Identifiers | All table and column names are quoted |
+| Dialect | The `(DbConnection)` constructor uses `SqlDialect.SQLite`; pass the dialect explicitly for PostgreSQL |
+
+## Tests
+
+`dotnet test Squealify.Tests` runs against in-memory SQLite. Set `SQUEALIFY_POSTGRESQL` to a connection string of a disposable database to also run the PostgreSQL suite.
+
+## Upgrading from 0.8
+
+| Change | Action |
+|---|---|
+| Identifiers are quoted (`"Id"`) | PostgreSQL databases created by 0.8 used folded lower-case names; recreate or rename |
+| `Guid`, `TimeSpan`, `byte`, `sbyte`, unsigned integers map natively | Remove their converter overrides; stored formats differ (e.g. `Guid` is `BLOB`/`UUID`) |
+| Converter names start upper-case (`StringArrayToStringConverter`) | Rename overrides |
+| Converters use the non-nullable type (`Func<T, string>` for `T?` properties) | Update override types |
+| `Update`, `Delete`, `DeleteAll` return affected rows | No action for `await` callers |
+| Attributes moved from generated sources to `Squealify.Abstractions` | No action |
+

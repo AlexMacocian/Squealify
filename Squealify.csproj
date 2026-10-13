@@ -1,8 +1,8 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <Version>0.8.2.2</Version>
+    <Version>0.9.0</Version>
     <LangVersion>latest</LangVersion>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <Authors>Alexandru Macocian</Authors>
@@ -14,21 +14,35 @@
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <Nullable>Enable</Nullable>
     <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Squealify.Tests/**;Squealify.Abstractions/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0">
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="4.14.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.13.0" PrivateAssets="all" />
-    <PackageReference Include="Sybil" Version="0.8.4" PrivateAssets="all" />
+    <!-- 5.0.0 is the compiler shipped with .NET 10.0.1xx SDKs; newer versions fail to load there (CS9057). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" PrivateAssets="all" />
+    <PackageReference Include="Sybil" Version="0.9.0-local.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Squealify.Abstractions\Squealify.Abstractions.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- Package the generator in the analyzer directory of the nuget package -->
     <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
     <None Include="$(OutputPath)\Sybil.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <!-- Attributes and enums ship once as a library, so every consuming assembly shares the same types -->
+    <None Include="Squealify.Abstractions\bin\$(Configuration)\netstandard2.0\Squealify.Abstractions.dll" Pack="true" PackagePath="lib/netstandard2.0" Visible="false" />
+    <None Include="Squealify.Abstractions\bin\$(Configuration)\netstandard2.0\Squealify.Abstractions.xml" Pack="true" PackagePath="lib/netstandard2.0" Visible="false" />
   </ItemGroup>
 
 </Project>

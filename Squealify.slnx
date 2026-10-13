@@ -1,3 +1,5 @@
 <Solution>
   <Project Path="Squealify.csproj" />
+  <Project Path="Squealify.Abstractions/Squealify.Abstractions.csproj" />
+  <Project Path="Squealify.Tests/Squealify.Tests.csproj" />
 </Solution>

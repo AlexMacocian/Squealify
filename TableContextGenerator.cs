@@ -1,11 +1,7 @@
-﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Squealify.Contexts;
-using Squealify.Table;
-using Sybil;
-using System.Collections.Generic;
-using System.Collections.Immutable;
+using Squealify.Model;
 using System.Linq;
 
 namespace Squealify;
@@ -15,168 +11,29 @@ public sealed class TableContextGenerator : IIncrementalGenerator
 {
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        var classDeclarations = context.SyntaxProvider.CreateSyntaxProvider(
-            predicate: static (s, _) => s is ClassDeclarationSyntax,
-            transform: static (ctx, _) => GetFilteredClassDeclarationSyntax(ctx)).Where(static c => c is not null);
-        var compilationAndClasses = context.CompilationProvider.Combine(classDeclarations.Collect());
-        context.RegisterSourceOutput(compilationAndClasses, (sourceProductionContext, tuple) => Execute(tuple.Left, tuple.Right, sourceProductionContext));
+        var tables = context.SyntaxProvider.ForAttributeWithMetadataName(
+            $"{Constants.Namespace}.{Constants.TableAttributeName}",
+            predicate: static (node, _) => node is ClassDeclarationSyntax,
+            transform: static (ctx, cancellationToken) => ModelBuilder.Build(ctx, cancellationToken));
+
+        var options = context.ParseOptionsProvider.Select(static (parseOptions, _) => new GenerationOptions(
+            FileScopedNamespace: parseOptions is CSharpParseOptions { LanguageVersion: >= LanguageVersion.CSharp10 }));
+
+        context.RegisterSourceOutput(tables.Combine(options), static (sourceProductionContext, pair) => Execute(sourceProductionContext, pair.Left, pair.Right));
     }
 
-    private static ClassDeclarationSyntax? GetFilteredClassDeclarationSyntax(GeneratorSyntaxContext context)
+    private static void Execute(SourceProductionContext context, TableModel table, GenerationOptions options)
     {
-        var classDeclarationSyntax = (ClassDeclarationSyntax)context.Node;
-        if (classDeclarationSyntax.AttributeLists
-            .SelectMany(l => l.Attributes)
-            .OfType<AttributeSyntax>()
-            .Any(s => s.Name.ToString() is Constants.TableAttributeName or Constants.TableAttributeShortName))
+        foreach (var diagnostic in table.Diagnostics)
         {
-            return classDeclarationSyntax;
+            context.ReportDiagnostic(Diagnostics.ToDiagnostic(diagnostic));
         }
 
-        return default;
-    }
-
-    private static void Execute(Compilation compilation, ImmutableArray<ClassDeclarationSyntax?> classDeclarationSyntaxes, SourceProductionContext sourceProductionContext)
-    {
-        if (classDeclarationSyntaxes.IsDefaultOrEmpty)
+        if (table.Diagnostics.Any())
         {
             return;
         }
 
-        var maybeLanguageVersion = (compilation.SyntaxTrees.FirstOrDefault()?.Options as CSharpParseOptions)?.LanguageVersion;
-        if (!maybeLanguageVersion.HasValue)
-        {
-            return;
-        }
-
-        var languageVersion = maybeLanguageVersion.Value;
-        foreach(var classDeclarationSyntax in classDeclarationSyntaxes)
-        {
-            if (classDeclarationSyntax is null)
-            {
-                continue;
-            }
-
-            ExecuteClass(classDeclarationSyntax, compilation, sourceProductionContext, languageVersion);
-        }
-    }
-
-    private static void ExecuteClass(ClassDeclarationSyntax classDeclarationSyntax, Compilation compilation, SourceProductionContext sourceProductionContext, LanguageVersion languageVersion)
-    {
-        var contextClassName = $"{classDeclarationSyntax.Identifier.ValueText}TableContextBase";
-        var usingsSet = new HashSet<string>
-        {
-            Constants.UsingSystem,
-            Constants.UsingSystemDataCommon,
-            Constants.UsingSystemRuntimeCompilerServices,
-            Constants.UsingSystemCollectionsGeneric,
-            Constants.UsingSystemThreadingTasks,
-            Constants.UsingSystemThreading
-        };
-
-        // Add the namespace of the class declaration (if any)
-        var namespaceNode = classDeclarationSyntax.Ancestors().FirstOrDefault(n => n is NamespaceDeclarationSyntax or FileScopedNamespaceDeclarationSyntax);
-        if (namespaceNode is BaseNamespaceDeclarationSyntax baseNamespace)
-        {
-            var namespaceName = baseNamespace.Name.ToString();
-            if (!string.IsNullOrEmpty(namespaceName))
-            {
-                usingsSet.Add(namespaceName);
-            }
-        }
-
-        // Collect all "top-level" using directives from the same file
-        var root = classDeclarationSyntax.SyntaxTree.GetRoot() as CompilationUnitSyntax;
-        if (root is not null)
-        {
-            foreach (var usingDirective in root.Usings)
-            {
-                var nameText = usingDirective.Name?.ToString();
-                if (nameText is not null)
-                {
-                    usingsSet.Add(nameText);
-                }
-            }
-        }
-
-        var builder = SyntaxBuilder.CreateCompilationUnit();
-        foreach(var u in usingsSet)
-        {
-            builder.WithUsing(u);
-        }
-
-        var namespaceBuilder = languageVersion >= LanguageVersion.CSharp10 ? SyntaxBuilder.CreateFileScopedNamespace(Constants.Namespace) : SyntaxBuilder.CreateNamespace(Constants.Namespace);
-        builder.WithNamespace(namespaceBuilder);
-        var classBuilder = SyntaxBuilder.CreateClass(contextClassName)
-            .WithModifiers($"{Constants.Public} {Constants.Abstract}")
-            .WithProperty(SyntaxBuilder.CreateProperty(Constants.DbConnectionType, Constants.DbConnectionPropertyName)
-                .WithModifier(Constants.Protected)
-                .WithAccessor(SyntaxBuilder.CreateGetter()))
-            .WithConstructor(SyntaxBuilder.CreateConstructor(contextClassName)
-                .WithParameter(Constants.DbConnectionType, Constants.DbConnectionArgumentName)
-                .WithModifier(Constants.Public)
-                .WithBody($"this.{Constants.DbConnectionPropertyName} = {Constants.DbConnectionArgumentName};"));
-        namespaceBuilder.WithClass(classBuilder);
-
-        var ctx = GetTableContext(classDeclarationSyntax, compilation);
-
-        // Generate create methods
-        (var createMethod, var createIfNotExistsMethod) = TableCreateMethodGenerator.GenerateCreateMethods(ctx);
-        var insertMethod = BasicQueryMethodGenerator.CreateInsertStatement(ctx);
-        var upsertMethod = BasicQueryMethodGenerator.CreateUpsertStatement(ctx);
-        var updateMethod = BasicQueryMethodGenerator.CreateUpdateStatement(ctx);
-        var deleteMethod = BasicQueryMethodGenerator.CreateDeleteStatement(ctx);
-        var deleteAllMethod = BasicQueryMethodGenerator.CreateDeleteAllStatement(ctx);
-        var findMethod = BasicQueryMethodGenerator.CreateFindStatement(ctx);
-        var findAllMethod = BasicQueryMethodGenerator.CreateFindAllStatement(ctx);
-        classBuilder
-            .WithMethod(createMethod.MethodBuilder)
-            .WithMethod(createIfNotExistsMethod.MethodBuilder)
-            .WithMethod(insertMethod.MethodBuilder)
-            .WithMethod(upsertMethod.MethodBuilder)
-            .WithMethod(updateMethod.MethodBuilder)
-            .WithMethod(deleteMethod.MethodBuilder)
-            .WithMethod(findMethod.MethodBuilder)
-            .WithMethod(deleteAllMethod.MethodBuilder)
-            .WithMethod(findAllMethod.MethodBuilder)
-            .WithMethod(CreateParameterMethodGenerator.CreateParameterMethod());
-
-        // Generate conversion properties
-        var conversionProperties = ctx.Fields
-            .Where(f => f.RequiresConversion)
-            .GroupBy(f => f.PropertyType)
-            .Select(g => g.First())
-            .Select(ConversionPropertyGenerator.GenerateConversionProperties)
-            .OfType<(PropertyBuilder ConvertTo, PropertyBuilder ConvertFrom)>();
-
-        foreach((var convertTo, var convertFrom) in conversionProperties)
-        {
-            classBuilder.WithProperty(convertTo);
-            classBuilder.WithProperty(convertFrom);
-        }
-
-        // Replace placeholders with formatted command text
-        var syntax = builder.Build();
-        var source = $"#nullable enable\n{syntax.ToFullString()}\n#nullable disable"
-            .Replace(createMethod.Placeholder, createMethod.CommandText)
-            .Replace(createIfNotExistsMethod.Placeholder, createIfNotExistsMethod.CommandText)
-            .Replace(insertMethod.Placeholder, insertMethod.CommandText)
-            .Replace(upsertMethod.Placeholder, upsertMethod.CommandText)
-            .Replace(updateMethod.Placeholder, updateMethod.CommandText)
-            .Replace(deleteMethod.Placeholder, deleteMethod.CommandText)
-            .Replace(deleteAllMethod.Placeholder, deleteAllMethod.CommandText)
-            .Replace(findMethod.Placeholder, findMethod.CommandText)
-            .Replace(findAllMethod.Placeholder, findAllMethod.CommandText);
-
-        sourceProductionContext.AddSource($"{contextClassName}.g.cs", source);
-    }
-
-    private static TableContext GetTableContext(ClassDeclarationSyntax classDeclarationSyntax, Compilation compilation)
-    {
-        var fields = SyntaxParsers.GetFieldsFromClass(classDeclarationSyntax, compilation);
-        var primaryKeyField = fields.First(f => f.IsPrimaryKey);
-        var tableName = SyntaxParsers.GetTableName(classDeclarationSyntax);
-        var tableUnqiues = SyntaxParsers.GetTableUniques(classDeclarationSyntax);
-        return new TableContext(tableName, classDeclarationSyntax.Identifier.ToString(), primaryKeyField, fields, tableUnqiues);
+        context.AddSource(table.HintName, new TableContextEmitter(table, options).Emit());
     }
 }
