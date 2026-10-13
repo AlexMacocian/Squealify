@@ -38,7 +38,7 @@ jobs:
       run: dotnet restore $env:Solution_Path
 
     - name: Test
-      run: dotnet test Squealify.Tests/Squealify.Tests.csproj -c $env:Configuration
+      run: dotnet test $env:Solution_Path -c $env:Configuration
 
     - name: Build Squealify project
       run: dotnet build $env:Source_Project_Path -c $env:Configuration
