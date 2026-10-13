@@ -235,6 +235,13 @@ internal static class QueryModelBuilder
 
     private static bool DerivesFromQueryContext(INamedTypeSymbol type)
     {
+        // Bases generated in the same compilation (table contexts) are not visible to generators; with several partial
+        // declarations Roslyn may report the unresolved base as an interface.
+        if (type.Interfaces.Any(i => i.TypeKind == TypeKind.Error))
+        {
+            return true;
+        }
+
         for (var current = type.BaseType; current is not null; current = current.BaseType)
         {
             // Bases generated in the same compilation (table contexts) are not visible to generators.

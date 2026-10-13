@@ -63,6 +63,12 @@ public sealed class GeneratorDiagnosticsTests
                 [SqlQuery("DELETE FROM items WHERE id = @id")]
                 private partial void Remove(uint id);
             }
+
+            public partial class ItemContext
+            {
+                [SqlQuery("SELECT COUNT(*) FROM items")]
+                public partial long Count();
+            }
             """);
 
         Assert.IsEmpty(diagnostics);
