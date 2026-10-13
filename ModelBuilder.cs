@@ -11,7 +11,7 @@ using System.Threading;
 namespace Squealify;
 
 /// <summary>
-/// Builds a <see cref="TableModel"/> from a class marked with [Table], using the semantic model.
+/// Builds a <see cref="TableModel"/> from a class or struct marked with [Table], using the semantic model.
 /// </summary>
 internal static class ModelBuilder
 {
@@ -32,21 +32,15 @@ internal static class ModelBuilder
             ? explicitName
             : type.Name;
 
+        var naming = GetNaming(tableAttribute);
         var columns = new List<ColumnModel>();
         foreach (var member in type.GetMembers())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (member is not IPropertySymbol property ||
-                property.IsStatic ||
-                property.IsIndexer ||
-                property.DeclaredAccessibility != Accessibility.Public ||
-                property.GetMethod is null ||
-                property.SetMethod is null)
+            if (GetColumnMember(member) is (ITypeSymbol memberType, NullableAnnotation annotation))
             {
-                continue;
+                columns.Add(BuildColumn(member, memberType, annotation, naming));
             }
-
-            columns.Add(BuildColumn(property));
         }
 
         var primaryKeys = columns.Where(c => c.IsPrimaryKey).ToList();
@@ -117,6 +111,7 @@ internal static class ModelBuilder
             HintName: GetHintName(type),
             ContextName: $"{type.Name}TableContextBase",
             DboType: type.ToDisplayString(TypeFormat),
+            IsValueType: type.IsValueType,
             TableName: tableName,
             Columns: columns.ToEquatableArray(),
             KeySets: DeduplicateKeySets(keySets, primaryKeyIndexes).ToEquatableArray(),
@@ -186,9 +181,142 @@ internal static class ModelBuilder
         }
     }
 
-    private static ColumnModel BuildColumn(IPropertySymbol property)
+    /// <summary>
+    /// Type and nullable annotation of a member that maps to a column: public instance properties with a getter and a setter,
+    /// and public mutable instance fields.
+    /// </summary>
+    public static (ITypeSymbol Type, NullableAnnotation Annotation)? GetColumnMember(ISymbol member)
     {
-        var columnName = property.Name;
+        if (member.IsStatic || member.IsImplicitlyDeclared || member.DeclaredAccessibility != Accessibility.Public)
+        {
+            return null;
+        }
+
+        return member switch
+        {
+            IPropertySymbol { IsIndexer: false, GetMethod: not null, SetMethod: not null } property => (property.Type, property.NullableAnnotation),
+            IFieldSymbol { IsReadOnly: false, IsConst: false } field => (field.Type, field.NullableAnnotation),
+            _ => null
+        };
+    }
+
+    public static string ToSnakeCase(string name)
+    {
+        var builder = new StringBuilder(name.Length + 8);
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (char.IsUpper(c))
+            {
+                var previous = i > 0 ? name[i - 1] : '\0';
+                var next = i + 1 < name.Length ? name[i + 1] : '\0';
+                if (i > 0 && previous != '_' && (char.IsLower(previous) || char.IsDigit(previous) || (char.IsUpper(previous) && char.IsLower(next))))
+                {
+                    builder.Append('_');
+                }
+
+                builder.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                builder.Append(c);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Describes a value of <paramref name="type"/> (columns, query parameters and query results). Returns a model with
+    /// <see cref="ColumnKind.Custom"/> for types without a built-in mapping.
+    /// </summary>
+    public static ColumnModel DescribeValue(string name, string columnName, ITypeSymbol type, NullableAnnotation annotation)
+    {
+        var isNullable = false;
+        if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullableType)
+        {
+            type = nullableType.TypeArguments[0];
+            isNullable = true;
+        }
+        else if (type.IsReferenceType && (annotation == NullableAnnotation.Annotated || type.NullableAnnotation == NullableAnnotation.Annotated))
+        {
+            isNullable = true;
+        }
+
+        var valueType = type.WithNullableAnnotation(NullableAnnotation.NotAnnotated);
+        string? enumType = null;
+        ColumnKind kind;
+        if (valueType is INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } underlyingType })
+        {
+            enumType = valueType.ToDisplayString(TypeFormat);
+            kind = GetKind(underlyingType);
+        }
+        else
+        {
+            kind = GetKind(valueType);
+        }
+
+        string? convertToName = null;
+        string? convertFromName = null;
+        if (kind == ColumnKind.Custom)
+        {
+            var safeName = GetSafeTypeName(valueType);
+            convertToName = $"{safeName}ToStringConverter";
+            convertFromName = $"StringTo{safeName}Converter";
+        }
+
+        return new ColumnModel(
+            ColumnName: columnName,
+            PropertyName: name,
+            ValueType: valueType.ToDisplayString(TypeFormat),
+            Kind: kind,
+            EnumType: enumType,
+            IsNullable: isNullable,
+            IsValueType: valueType.IsValueType,
+            IsPrimaryKey: false,
+            IsAutoIncrement: false,
+            IsUnique: false,
+            VarcharLength: null,
+            ReferenceTable: null,
+            ReferenceColumn: null,
+            OnDelete: 0,
+            ConvertToName: convertToName,
+            ConvertFromName: convertFromName);
+    }
+
+    /// <summary>
+    /// Explicit [ColumnName] of a member, if any.
+    /// </summary>
+    public static string? GetExplicitColumnName(ISymbol member)
+    {
+        foreach (var attribute in member.GetAttributes())
+        {
+            if (attribute.AttributeClass?.ToDisplayString() == AttributePrefix + Constants.ColumnNameAttributeName &&
+                attribute.ConstructorArguments.FirstOrDefault().Value is string { Length: > 0 } name)
+            {
+                return name;
+            }
+        }
+
+        return null;
+    }
+
+    private static int GetNaming(AttributeData tableAttribute)
+    {
+        foreach (var argument in tableAttribute.NamedArguments)
+        {
+            if (argument.Key == Constants.TableNamingProperty && argument.Value.Value is int value)
+            {
+                return value;
+            }
+        }
+
+        return 0;
+    }
+
+    private static ColumnModel BuildColumn(ISymbol property, ITypeSymbol propertyType, NullableAnnotation annotation, int naming)
+    {
+        var columnName = naming == Constants.SnakeCaseNaming ? ToSnakeCase(property.Name) : property.Name;
         var isPrimaryKey = false;
         var isAutoIncrement = false;
         var isUnique = false;
@@ -235,57 +363,17 @@ internal static class ModelBuilder
             }
         }
 
-        var type = property.Type;
-        var isNullable = false;
-        if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullableType)
+        var description = DescribeValue(property.Name, columnName, propertyType, annotation);
+        return description with
         {
-            type = nullableType.TypeArguments[0];
-            isNullable = true;
-        }
-        else if (type.IsReferenceType && property.NullableAnnotation == NullableAnnotation.Annotated)
-        {
-            isNullable = true;
-        }
-
-        var valueType = type.WithNullableAnnotation(NullableAnnotation.NotAnnotated);
-        string? enumType = null;
-        ColumnKind kind;
-        if (valueType is INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } underlyingType })
-        {
-            enumType = valueType.ToDisplayString(TypeFormat);
-            kind = GetKind(underlyingType);
-        }
-        else
-        {
-            kind = GetKind(valueType);
-        }
-
-        string? convertToName = null;
-        string? convertFromName = null;
-        if (kind == ColumnKind.Custom)
-        {
-            var safeName = GetSafeTypeName(valueType);
-            convertToName = $"{safeName}ToStringConverter";
-            convertFromName = $"StringTo{safeName}Converter";
-        }
-
-        return new ColumnModel(
-            ColumnName: columnName,
-            PropertyName: property.Name,
-            ValueType: valueType.ToDisplayString(TypeFormat),
-            Kind: kind,
-            EnumType: enumType,
-            IsNullable: isNullable,
-            IsValueType: valueType.IsValueType,
-            IsPrimaryKey: isPrimaryKey,
-            IsAutoIncrement: isAutoIncrement,
-            IsUnique: isUnique,
-            VarcharLength: varcharLength,
-            ReferenceTable: referenceTable,
-            ReferenceColumn: referenceColumn,
-            OnDelete: onDelete,
-            ConvertToName: convertToName,
-            ConvertFromName: convertFromName);
+            IsPrimaryKey = isPrimaryKey,
+            IsAutoIncrement = isAutoIncrement,
+            IsUnique = isUnique,
+            VarcharLength = varcharLength,
+            ReferenceTable = referenceTable,
+            ReferenceColumn = referenceColumn,
+            OnDelete = onDelete
+        };
     }
 
     private static ColumnKind GetKind(ITypeSymbol type)

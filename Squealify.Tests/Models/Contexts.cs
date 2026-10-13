@@ -33,8 +33,11 @@ public sealed class AccountContext(DbConnection connection, SqlDialect dialect) 
     }
 }
 
-public sealed class CharacterContext(DbConnection connection, SqlDialect dialect) : CharacterDboTableContextBase(connection, dialect)
+public sealed partial class CharacterContext(DbConnection connection, SqlDialect dialect) : CharacterDboTableContextBase(connection, dialect)
 {
+    [SqlQuery(@"SELECT ""Id"", ""AccountId"", ""FirstName"", ""LastName"", ""GameMode"" FROM ""characters"" WHERE ""GameMode"" = @gameMode ORDER BY ""Id""")]
+    public partial List<CharacterDbo> FindByGameModeOrdered(int gameMode);
+
     protected override DbParameter CreateParameter<TValue>(DbCommand command, string name)
         => NpgsqlTypedParameters.Create<TValue>(command, name) ?? base.CreateParameter<TValue>(command, name);
 

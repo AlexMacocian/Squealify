@@ -28,4 +28,12 @@ public static class Constants
     public const string TableIndexAttributeName = "TableIndexAttribute";
     public const string TableQueryAttributeName = "TableQueryAttribute";
     public const string TableForeignKeyAttributeName = "TableForeignKeyAttribute";
+    public const string TableNamingProperty = "Naming";
+    public const int SnakeCaseNaming = 1;
+    public const string SqlQueryAttributeName = "SqlQueryAttribute";
+    public const string SqlQueryPostgreSqlProperty = "PostgreSql";
+    public const string SqlQueryContextName = "SqlQueryContext";
+    public const string OptionsAttributeName = "SquealifyOptionsAttribute";
+    public const string OptionsSynchronousProperty = "Synchronous";
+    public const string OptionsContextBaseProperty = "ContextBase";
 }

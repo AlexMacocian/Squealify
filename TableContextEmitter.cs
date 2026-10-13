@@ -16,6 +16,7 @@ namespace Squealify;
 /// - Parameter values are set through the virtual generic <c>SetParameterValue&lt;T&gt;</c>, so providers with typed parameters can avoid boxing.
 /// - Multi-row writes use chunked multi-row statements (large, small and single row chunks).
 /// - Rows are read with typed getters only.
+/// - Synchronous mode: no tasks, struct rows passed with <c>in</c>, multi-row writes over <c>ReadOnlySpan</c>.
 /// </remarks>
 internal sealed class TableContextEmitter
 {
@@ -27,6 +28,7 @@ internal sealed class TableContextEmitter
 
     private const string Dbo = "dbo";
     private const string Dbos = "dbos";
+    private const string Results = "results";
     private const string CancellationToken = "cancellationToken";
     private const string ConfigureAwait = ".ConfigureAwait(false)";
 
@@ -53,35 +55,34 @@ internal sealed class TableContextEmitter
         this.insertColumns = this.columns.Where(c => !c.IsAutoIncrement).ToList();
     }
 
+    private bool Sync => this.options.Synchronous;
+
+    private string RowsCount => this.Sync ? $"{Dbos}.Length" : $"{Dbos}.Count";
+
     public string Emit()
     {
         var classBuilder = SyntaxBuilder.CreateClass(this.table.ContextName)
             .WithModifiers("public abstract partial")
-            .WithInterface("IDisposable")
-            .WithInterface("IAsyncDisposable")
+            .WithBaseClass(this.options.ContextBase ?? Constants.SqlQueryContextName)
             .WithConstructor(SyntaxBuilder.CreateConstructor(this.table.ContextName)
                 .WithModifier(Constants.Public)
                 .WithParameter("DbConnection", "connection")
-                .WithBody($@"this.Connection = connection;
-this.Dialect = {Constants.SqlDialectEnumName}.{Constants.SqlDialectSqlite};"))
+                .WithBase(SyntaxBuilder.CreateBaseConstructor()
+                    .WithArgument("connection")
+                    .WithArgument($"{Constants.SqlDialectEnumName}.{Constants.SqlDialectSqlite}")))
             .WithConstructor(SyntaxBuilder.CreateConstructor(this.table.ContextName)
                 .WithModifier(Constants.Public)
                 .WithParameter("DbConnection", "connection")
                 .WithParameter(Constants.SqlDialectEnumName, "dialect")
-                .WithBody(@"this.Connection = connection;
-this.Dialect = dialect;"))
+                .WithBase(SyntaxBuilder.CreateBaseConstructor()
+                    .WithArgument("connection")
+                    .WithArgument("dialect")))
             .WithField(Const("string", "TableName", Literal(this.table.TableName), isPublic: true))
-            .WithField(Const("string", "SelectColumns", Literal(this.sql.SelectColumns), isPublic: true))
-            .WithProperty(SyntaxBuilder.CreateProperty("DbConnection", "Connection")
-                .WithModifier(Constants.Protected)
-                .WithAccessor(SyntaxBuilder.CreateGetter()))
-            .WithProperty(SyntaxBuilder.CreateProperty(Constants.SqlDialectEnumName, "Dialect")
-                .WithModifier(Constants.Public)
-                .WithAccessor(SyntaxBuilder.CreateGetter()))
-            .WithProperty(SyntaxBuilder.CreateProperty("DbTransaction?", "Transaction")
-                .WithModifier(Constants.Public)
-                .WithAccessor(SyntaxBuilder.CreateGetter())
-                .WithAccessor(SyntaxBuilder.CreateSetter()));
+            .WithField(Const("string", "SelectColumns", Literal(this.sql.SelectColumns), isPublic: true));
+        if (!this.Sync)
+        {
+            classBuilder.WithInterface("IAsyncDisposable");
+        }
 
         this.AddConverters(classBuilder);
         this.AddCreateTable(classBuilder);
@@ -91,7 +92,6 @@ this.Dialect = dialect;"))
         this.AddFind(classBuilder);
         this.AddKeySets(classBuilder);
         this.AddReadRow(classBuilder);
-        this.AddInfrastructure(classBuilder);
         this.AddDispose(classBuilder);
 
         var namespaceBuilder = this.options.FileScopedNamespace
@@ -139,10 +139,9 @@ this.Dialect = dialect;"))
             classBuilder
                 .WithField(Const("string", sqliteField, Verbatim(this.sql.CreateTable(SqlDialect.SQLite, ifNotExists))))
                 .WithField(Const("string", postgreSqlField, Verbatim(this.sql.CreateTable(SqlDialect.PostgreSQL, ifNotExists))))
-                .WithMethod(AsyncMethod("ValueTask", methodName)
-                    .WithParameter("CancellationToken", CancellationToken)
-                    .WithBody($@"await using var command = this.CreateCommand(this.Dialect == {Constants.SqlDialectEnumName}.{Constants.SqlDialectPostgreSql} ? {postgreSqlField} : {sqliteField});
-await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"));
+                .WithMethod(this.WithCancellation(this.PublicMethod(null, methodName))
+                    .WithBody($@"{this.UsingCommand} = this.CreateCommand(this.Dialect == {Constants.SqlDialectEnumName}.{Constants.SqlDialectPostgreSql} ? {postgreSqlField} : {sqliteField});
+{this.Execute("ExecuteNonQuery")};"));
         }
     }
 
@@ -158,12 +157,21 @@ await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"));
         {
             this.AddBatchStatement(classBuilder, "Insert", this.sql.ValuesHead(this.insertColumns), ";", this.insertColumns.Count, "Row", parenthesize: true);
             classBuilder
-                .WithMethod(this.SingleRowWrite("Insert", "Row"))
+                .WithMethod(this.SingleRowWrite("Insert", "Insert", "Row", returnsInserted: false))
                 .WithMethod(this.ManyRowsWrite("InsertMany", "Insert", this.insertColumns.Count, "Row", returnsCount: false));
         }
 
+        if (this.insertColumns.Count > 0)
+        {
+            var rowMethods = this.autoIncrement is null ? "Row" : "InsertRow";
+            this.AddBatchStatement(classBuilder, "InsertIfNotExists", this.sql.ValuesHead(this.insertColumns), this.sql.DoNothingTail(), this.insertColumns.Count, rowMethods, parenthesize: true);
+            classBuilder
+                .WithMethod(this.SingleRowWrite("InsertIfNotExists", "InsertIfNotExists", rowMethods, returnsInserted: true))
+                .WithMethod(this.ManyRowsWrite("InsertIfNotExistsMany", "InsertIfNotExists", this.insertColumns.Count, rowMethods, returnsCount: true));
+        }
+
         classBuilder
-            .WithMethod(this.SingleRowWrite("Upsert", "Row"))
+            .WithMethod(this.SingleRowWrite("Upsert", "Upsert", "Row", returnsInserted: false))
             .WithMethod(this.ManyRowsWrite("UpsertMany", "Upsert", this.columns.Count, "Row", returnsCount: false));
     }
 
@@ -183,23 +191,21 @@ await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"));
         }
         else
         {
-            classBuilder.WithMethod(AsyncMethod("ValueTask", "InsertMany")
-                .WithParameter($"IReadOnlyList<{this.table.DboType}>", Dbos)
-                .WithParameter("CancellationToken", CancellationToken)
+            classBuilder.WithMethod(this.WithCancellation(this.PublicMethod(null, "InsertMany")
+                .WithParameter(this.RowsParameter()))
                 .WithBody($@"var command = this.GetInsertReturningCommand();
-for (var index = 0; index < {Dbos}.Count; index++)
+for (var index = 0; index < {this.RowsCount}; index++)
 {{
-    await command.ExecuteScalarAsync({CancellationToken}){ConfigureAwait};
+    {this.Execute("ExecuteScalar")};
 }}"));
         }
 
         this.AddSingleCommand(classBuilder, "InsertReturning", this.sql.InsertReturning(this.insertColumns, autoIncrementColumn), hasInsertColumns ? "this.AddInsertRowParameters(command, 1);" : string.Empty);
-        classBuilder.WithMethod(AsyncMethod($"ValueTask<{autoIncrementColumn.ValueType}>", "Insert")
-            .WithParameter(this.table.DboType, Dbo)
-            .WithParameter("CancellationToken", CancellationToken)
+        classBuilder.WithMethod(this.WithCancellation(this.PublicMethod(autoIncrementColumn.ValueType, "Insert")
+            .WithParameter(this.RowParameter()))
             .WithBody($@"var command = this.GetInsertReturningCommand();
 {setInsertParameters}
-var result = await command.ExecuteScalarAsync({CancellationToken}){ConfigureAwait};
+var result = {this.Execute("ExecuteScalar")};
 return {resultCast}Convert.ToInt64(result);"));
     }
 
@@ -214,22 +220,20 @@ return {resultCast}Convert.ToInt64(result);"));
         this.AddRowParameterMethods(classBuilder, "UpdateRow", updateColumns);
         this.AddSingleCommand(classBuilder, "Update", this.sql.Update(this.nonKeys, this.keys), "this.AddUpdateRowParameters(command, 1);");
         classBuilder
-            .WithMethod(AsyncMethod("ValueTask<int>", "Update")
-                .WithParameter(this.table.DboType, Dbo)
-                .WithParameter("CancellationToken", CancellationToken)
+            .WithMethod(this.WithCancellation(this.PublicMethod("int", "Update")
+                .WithParameter(this.RowParameter()))
                 .WithBody($@"var command = this.GetUpdateCommand();
 this.SetUpdateRowParameters(command.Parameters, 0, {Dbo});
-return await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"))
-            .WithMethod(AsyncMethod("ValueTask<int>", "UpdateMany")
-                .WithParameter($"IReadOnlyList<{this.table.DboType}>", Dbos)
-                .WithParameter("CancellationToken", CancellationToken)
+return {this.Execute("ExecuteNonQuery")};"))
+            .WithMethod(this.WithCancellation(this.PublicMethod("int", "UpdateMany")
+                .WithParameter(this.RowsParameter()))
                 .WithBody($@"var command = this.GetUpdateCommand();
 var parameters = command.Parameters;
 var affected = 0;
-for (var index = 0; index < {Dbos}.Count; index++)
+for (var index = 0; index < {this.RowsCount}; index++)
 {{
     this.SetUpdateRowParameters(parameters, 0, {Dbos}[index]);
-    affected += await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};
+    affected += {this.Execute("ExecuteNonQuery")};
 }}
 
 return affected;"));
@@ -239,38 +243,29 @@ return affected;"));
     {
         this.AddRowParameterMethods(classBuilder, "Key", this.keys);
         this.AddSingleCommand(classBuilder, "Delete", this.sql.Delete(this.keys), "this.AddKeyParameters(command, 1);");
-        var deleteMethod = AsyncMethod("ValueTask<int>", "Delete");
+        var deleteMethod = this.PublicMethod("int", "Delete");
         AddArguments(deleteMethod, this.keys);
-        classBuilder.WithMethod(deleteMethod
-            .WithParameter("CancellationToken", CancellationToken)
+        classBuilder.WithMethod(this.WithCancellation(deleteMethod)
             .WithBody($@"var command = this.GetDeleteCommand();
 var parameters = command.Parameters;
-{this.SetArgumentParameters(this.keys)}
-return await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"));
+{SetArgumentParameters(this.keys)}
+return {this.Execute("ExecuteNonQuery")};"));
 
         this.AddBatchStatement(classBuilder, "DeleteMany", this.sql.DeleteManyHead(this.keys), ");", this.keys.Count, "Key", parenthesize: this.keys.Count > 1);
         classBuilder.WithMethod(this.ManyRowsWrite("DeleteMany", "DeleteMany", this.keys.Count, "Key", returnsCount: true));
 
         classBuilder
             .WithField(Const("string", "DeleteAllSql", Verbatim(this.sql.DeleteAll())))
-            .WithMethod(AsyncMethod("ValueTask<int>", "DeleteAll")
-                .WithParameter("CancellationToken", CancellationToken)
-                .WithBody($@"await using var command = this.CreateCommand(DeleteAllSql);
-return await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"));
+            .WithMethod(this.WithCancellation(this.PublicMethod("int", "DeleteAll"))
+                .WithBody($@"{this.UsingCommand} = this.CreateCommand(DeleteAllSql);
+return {this.Execute("ExecuteNonQuery")};"));
     }
 
     private void AddFind(ClassBuilder classBuilder)
     {
         this.AddSingleRowQuery(classBuilder, "Find", this.keys);
         classBuilder.WithField(Const("string", "FindAllSql", Verbatim(this.sql.Select([]))));
-        classBuilder.WithMethod(AsyncMethod($"IAsyncEnumerable<{this.table.DboType}>", "FindAll")
-            .WithParameter(EnumeratorCancellationParameter())
-            .WithBody($@"await using var command = this.CreateCommand(FindAllSql);
-await using var reader = await command.ExecuteReaderAsync({CancellationToken}){ConfigureAwait};
-while (await reader.ReadAsync({CancellationToken}){ConfigureAwait})
-{{
-    yield return this.ReadRow(reader);
-}}"));
+        this.AddMultiRowQuery(classBuilder, "FindAll", [], "this.CreateCommand(FindAllSql)", disposeCommand: true);
     }
 
     private void AddKeySets(ClassBuilder classBuilder)
@@ -285,38 +280,72 @@ while (await reader.ReadAsync({CancellationToken}){ConfigureAwait})
             }
             else
             {
-                var sqlField = $"Find{suffix}Sql";
-                classBuilder.WithField(Const("string", sqlField, Verbatim(this.sql.Select(keySetColumns))));
-                var findMethod = AsyncMethod($"IAsyncEnumerable<{this.table.DboType}>", "Find" + suffix);
-                AddArguments(findMethod, keySetColumns);
-                classBuilder.WithMethod(findMethod
-                    .WithParameter(EnumeratorCancellationParameter())
-                    .WithBody($@"await using var command = this.CreateCommand({sqlField});
-{AddParameterStatements(keySetColumns, "0")}
+                this.AddSingleCommand(classBuilder, $"Find{suffix}", this.sql.Select(keySetColumns), AddParameterStatements(keySetColumns, "0"));
+                this.AddMultiRowQuery(classBuilder, "Find" + suffix, keySetColumns, $"this.GetFind{suffix}Command()", disposeCommand: false);
+            }
+
+            this.AddSingleCommand(classBuilder, "Delete" + suffix, this.sql.Delete(keySetColumns), AddParameterStatements(keySetColumns, "0"));
+            var deleteMethod = this.PublicMethod("int", "Delete" + suffix);
+            AddArguments(deleteMethod, keySetColumns);
+            classBuilder.WithMethod(this.WithCancellation(deleteMethod)
+                .WithBody($@"var command = this.GetDelete{suffix}Command();
 var parameters = command.Parameters;
-{this.SetArgumentParameters(keySetColumns)}
+{SetArgumentParameters(keySetColumns)}
+return {this.Execute("ExecuteNonQuery")};"));
+        }
+    }
+
+    /// <summary>
+    /// Async: one method returning IAsyncEnumerable. Sync: one method returning a new list and one appending to a given list.
+    /// </summary>
+    private void AddMultiRowQuery(ClassBuilder classBuilder, string name, IReadOnlyList<ColumnModel> filter, string getCommand, bool disposeCommand)
+    {
+        var commandStatement = disposeCommand
+            ? $"{this.UsingCommand} = {getCommand};"
+            : $"var command = {getCommand};";
+        var setParameters = filter.Count == 0
+            ? string.Empty
+            : $@"var parameters = command.Parameters;
+{SetArgumentParameters(filter)}";
+        if (!this.Sync)
+        {
+            var asyncMethod = AsyncMethod($"IAsyncEnumerable<{this.table.DboType}>", name);
+            AddArguments(asyncMethod, filter);
+            classBuilder.WithMethod(asyncMethod
+                .WithParameter(EnumeratorCancellationParameter())
+                .WithBody($@"{commandStatement}
+{setParameters}
 await using var reader = await command.ExecuteReaderAsync({CancellationToken}){ConfigureAwait};
 while (await reader.ReadAsync({CancellationToken}){ConfigureAwait})
 {{
     yield return this.ReadRow(reader);
 }}"));
-            }
-
-            this.AddSingleCommand(classBuilder, "Delete" + suffix, this.sql.Delete(keySetColumns), AddParameterStatements(keySetColumns, "0"));
-            var deleteMethod = AsyncMethod("ValueTask<int>", "Delete" + suffix);
-            AddArguments(deleteMethod, keySetColumns);
-            classBuilder.WithMethod(deleteMethod
-                .WithParameter("CancellationToken", CancellationToken)
-                .WithBody($@"var command = this.GetDelete{suffix}Command();
-var parameters = command.Parameters;
-{this.SetArgumentParameters(keySetColumns)}
-return await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"));
+            return;
         }
+
+        var listMethod = SyntaxBuilder.CreateMethod($"List<{this.table.DboType}>", name).WithModifier(Constants.Public);
+        AddArguments(listMethod, filter);
+        var arguments = string.Join(string.Empty, filter.Select(c => ArgumentName(c) + ", "));
+        classBuilder.WithMethod(listMethod.WithBody($@"var {Results} = new List<{this.table.DboType}>();
+this.{name}({arguments}{Results});
+return {Results};"));
+
+        var fillMethod = SyntaxBuilder.CreateMethod("void", name).WithModifier(Constants.Public);
+        AddArguments(fillMethod, filter);
+        classBuilder.WithMethod(fillMethod
+            .WithParameter($"List<{this.table.DboType}>", Results)
+            .WithBody($@"{commandStatement}
+{setParameters}
+using var reader = command.ExecuteReader();
+while (reader.Read())
+{{
+    {Results}.Add(this.ReadRow(reader));
+}}"));
     }
 
     private void AddReadRow(ClassBuilder classBuilder)
     {
-        var assignments = string.Join(",\n", this.columns.Select((c, i) => $"    {c.PropertyName} = {ReadExpression(c, i)}"));
+        var assignments = string.Join(",\n", this.columns.Select((c, i) => $"    {c.PropertyName} = {ColumnCodec.ReadExpression(c, i.ToString())}"));
         classBuilder.WithMethod(SyntaxBuilder.CreateMethod(this.table.DboType, "ReadRow")
             .WithModifier(Constants.Protected)
             .WithParameter("DbDataReader", "reader")
@@ -326,48 +355,13 @@ return await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};"
 }};"));
     }
 
-    private void AddInfrastructure(ClassBuilder classBuilder)
-    {
-        classBuilder
-            .WithMethod(SyntaxBuilder.CreateMethod("DbCommand", "CreateCommand")
-                .WithModifier(Constants.Protected)
-                .WithParameter("string", "commandText")
-                .WithBody(@"var command = this.Connection.CreateCommand();
-command.CommandText = commandText;
-command.Transaction = this.Transaction;
-return command;"))
-            .WithMethod(SyntaxBuilder.CreateMethod("DbParameter", "CreateParameter")
-                .WithModifiers("protected virtual")
-                .WithTypeParameter(SyntaxBuilder.CreateTypeParameter("TValue"))
-                .WithParameter("DbCommand", "command")
-                .WithParameter("string", "name")
-                .WithBody(@"var parameter = command.CreateParameter();
-parameter.ParameterName = name;
-return parameter;"))
-            .WithMethod(SyntaxBuilder.CreateMethod("void", "SetParameterValue")
-                .WithModifiers("protected virtual")
-                .WithTypeParameter(SyntaxBuilder.CreateTypeParameter("TValue"))
-                .WithParameter("DbParameter", "parameter")
-                .WithParameter("TValue", "value")
-                .WithBody("parameter.Value = value is null ? DBNull.Value : (object)value;"))
-            .WithMethod(SyntaxBuilder.CreateMethod("DbParameter", "CreateParameter")
-                .WithModifier(Constants.Protected)
-                .WithParameter("DbCommand", "command")
-                .WithParameter("string", "name")
-                .WithParameter("object?", "value")
-                .WithBody(@"var parameter = command.CreateParameter();
-parameter.ParameterName = name;
-parameter.Value = value ?? DBNull.Value;
-return parameter;"));
-    }
-
     private void AddDispose(ClassBuilder classBuilder)
     {
-        var syncBody = new StringBuilder();
+        var syncBody = new StringBuilder("if (disposing)\n{\n");
         var asyncBody = new StringBuilder();
         foreach (var field in this.singleCommandFields)
         {
-            syncBody.AppendLine($"this.{field}?.Dispose();").AppendLine($"this.{field} = null;");
+            syncBody.AppendLine($"    this.{field}?.Dispose();").AppendLine($"    this.{field} = null;");
             asyncBody.AppendLine($"if (this.{field} is not null)")
                 .AppendLine("{")
                 .AppendLine($"    await this.{field}.DisposeAsync(){ConfigureAwait};")
@@ -377,12 +371,12 @@ return parameter;"));
 
         foreach (var field in this.batchCommandFields)
         {
-            syncBody.AppendLine($"foreach (var command in this.{field})")
-                .AppendLine("{")
-                .AppendLine("    command?.Dispose();")
-                .AppendLine("}")
+            syncBody.AppendLine($"    foreach (var command in this.{field})")
+                .AppendLine("    {")
+                .AppendLine("        command?.Dispose();")
+                .AppendLine("    }")
                 .AppendLine()
-                .AppendLine($"Array.Clear(this.{field}, 0, this.{field}.Length);");
+                .AppendLine($"    Array.Clear(this.{field}, 0, this.{field}.Length);");
             asyncBody.AppendLine($"foreach (var command in this.{field})")
                 .AppendLine("{")
                 .AppendLine("    if (command is not null)")
@@ -394,14 +388,17 @@ return parameter;"));
                 .AppendLine($"Array.Clear(this.{field}, 0, this.{field}.Length);");
         }
 
-        syncBody.Append("GC.SuppressFinalize(this);");
-        asyncBody.Append("GC.SuppressFinalize(this);");
-        classBuilder
-            .WithMethod(SyntaxBuilder.CreateMethod("void", "Dispose")
-                .WithModifier(Constants.Public)
-                .WithBody(syncBody.ToString()))
-            .WithMethod(AsyncMethod("ValueTask", "DisposeAsync")
+        syncBody.AppendLine("}").AppendLine().Append("base.Dispose(disposing);");
+        asyncBody.Append("this.Dispose();");
+        classBuilder.WithMethod(SyntaxBuilder.CreateMethod("void", "Dispose")
+            .WithModifiers("protected override")
+            .WithParameter("bool", "disposing")
+            .WithBody(syncBody.ToString()));
+        if (!this.Sync)
+        {
+            classBuilder.WithMethod(AsyncMethod("ValueTask", "DisposeAsync")
                 .WithBody(asyncBody.ToString()));
+        }
     }
 
     /// <summary>
@@ -423,9 +420,9 @@ return parameter;"));
                 .WithModifier(Constants.Private)
                 .WithParameter("DbParameterCollection", "parameters")
                 .WithParameter("int", "offset")
-                .WithParameter(this.table.DboType, Dbo)
+                .WithParameter(this.InParameter(this.table.DboType, Dbo))
                 .WithBody(string.Join("\n", rowColumns.Select((c, i) =>
-                    $"this.SetParameterValue<{ParameterType(c)}>(parameters[{Offset("offset", i)}], {WriteExpression(c, $"{Dbo}.{c.PropertyName}")});"))));
+                    $"this.SetParameterValue<{ColumnCodec.ParameterType(c)}>(parameters[{Offset("offset", i)}], {ColumnCodec.WriteExpression(c, $"{Dbo}.{c.PropertyName}")});"))));
     }
 
     /// <summary>
@@ -492,15 +489,14 @@ return command;"));
     private void AddSingleRowQuery(ClassBuilder classBuilder, string name, IReadOnlyList<ColumnModel> filter)
     {
         this.AddSingleCommand(classBuilder, name, this.sql.Select(filter), AddParameterStatements(filter, "0"));
-        var method = AsyncMethod($"ValueTask<{this.table.DboType}?>", name);
+        var method = this.PublicMethod($"{this.table.DboType}?", name);
         AddArguments(method, filter);
-        classBuilder.WithMethod(method
-            .WithParameter("CancellationToken", CancellationToken)
+        classBuilder.WithMethod(this.WithCancellation(method)
             .WithBody($@"var command = this.Get{name}Command();
 var parameters = command.Parameters;
-{this.SetArgumentParameters(filter)}
-await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SingleRow, {CancellationToken}){ConfigureAwait};
-if (!await reader.ReadAsync({CancellationToken}){ConfigureAwait})
+{SetArgumentParameters(filter)}
+{this.OpenReader("CommandBehavior.SingleRow")}
+if (!{this.ReadNext()})
 {{
     return null;
 }}
@@ -508,21 +504,21 @@ if (!await reader.ReadAsync({CancellationToken}){ConfigureAwait})
 return this.ReadRow(reader);"));
     }
 
-    private MethodBuilder SingleRowWrite(string name, string rowMethods)
+    private MethodBuilder SingleRowWrite(string name, string statement, string rowMethods, bool returnsInserted)
     {
-        return AsyncMethod("ValueTask", name)
-            .WithParameter(this.table.DboType, Dbo)
-            .WithParameter("CancellationToken", CancellationToken)
-            .WithBody($@"var command = this.Get{name}Command({SingleRowSlot});
+        var execute = this.Execute("ExecuteNonQuery");
+        return this.WithCancellation(this.PublicMethod(returnsInserted ? "bool" : null, name)
+            .WithParameter(this.RowParameter()))
+            .WithBody($@"var command = this.Get{statement}Command({SingleRowSlot});
 this.Set{rowMethods}Parameters(command.Parameters, 0, {Dbo});
-await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};");
+{(returnsInserted ? $"return {execute} > 0;" : execute + ";")}");
     }
 
     private MethodBuilder ManyRowsWrite(string methodName, string statement, int columnsPerRow, string rowMethods, bool returnsCount)
     {
         var body = $@"{(returnsCount ? "var affected = 0;" : string.Empty)}
 var index = 0;
-var count = {Dbos}.Count;
+var count = {this.RowsCount};
 while (index < count)
 {{
     var slot = {SqlBatchGenerator.ClassName}.GetSlot(count - index, {statement}LargeBatchRows, {statement}SmallBatchRows);
@@ -534,24 +530,66 @@ while (index < count)
         this.Set{rowMethods}Parameters(parameters, {RowOffset(columnsPerRow)}, {Dbos}[index + row]);
     }}
 
-    {(returnsCount ? "affected += " : string.Empty)}await command.ExecuteNonQueryAsync({CancellationToken}){ConfigureAwait};
+    {(returnsCount ? "affected += " : string.Empty)}{this.Execute("ExecuteNonQuery")};
     index += rows;
 }}
 {(returnsCount ? "return affected;" : string.Empty)}";
 
-        return AsyncMethod(returnsCount ? "ValueTask<int>" : "ValueTask", methodName)
-            .WithParameter($"IReadOnlyList<{this.table.DboType}>", Dbos)
-            .WithParameter("CancellationToken", CancellationToken)
+        return this.WithCancellation(this.PublicMethod(returnsCount ? "int" : null, methodName)
+            .WithParameter(this.RowsParameter()))
             .WithBody(body);
     }
 
-    private string SetArgumentParameters(IReadOnlyList<ColumnModel> filter)
+    /// <summary>
+    /// Public method returning <paramref name="result"/> (null for none), as a ValueTask in asynchronous mode.
+    /// </summary>
+    private MethodBuilder PublicMethod(string? result, string name)
+    {
+        if (this.Sync)
+        {
+            return SyntaxBuilder.CreateMethod(result ?? "void", name).WithModifier(Constants.Public);
+        }
+
+        return AsyncMethod(result is null ? "ValueTask" : $"ValueTask<{result}>", name);
+    }
+
+    private MethodBuilder WithCancellation(MethodBuilder method)
+        => this.Sync ? method : method.WithParameter("CancellationToken", CancellationToken);
+
+    private ParameterBuilder RowParameter()
+        => this.Sync ? this.InParameter(this.table.DboType, Dbo) : SyntaxBuilder.CreateParameter(this.table.DboType, Dbo);
+
+    private ParameterBuilder RowsParameter()
+        => SyntaxBuilder.CreateParameter(this.Sync ? $"ReadOnlySpan<{this.table.DboType}>" : $"IReadOnlyList<{this.table.DboType}>", Dbos);
+
+    private ParameterBuilder InParameter(string type, string name)
+    {
+        var parameter = SyntaxBuilder.CreateParameter(type, name);
+        return this.table.IsValueType ? parameter.WithModifier("in") : parameter;
+    }
+
+    private string UsingCommand => this.Sync ? "using var command" : "await using var command";
+
+    /// <summary>
+    /// Executes <c>command.{method}</c> (ExecuteNonQuery, ExecuteScalar) in the generation mode.
+    /// </summary>
+    private string Execute(string method)
+        => this.Sync ? $"command.{method}()" : $"await command.{method}Async({CancellationToken}){ConfigureAwait}";
+
+    private string OpenReader(string behavior)
+        => this.Sync
+            ? $"using var reader = command.ExecuteReader({behavior});"
+            : $"await using var reader = await command.ExecuteReaderAsync({behavior}, {CancellationToken}){ConfigureAwait};";
+
+    private string ReadNext() => this.Sync ? "reader.Read()" : $"await reader.ReadAsync({CancellationToken}){ConfigureAwait}";
+
+    private static string SetArgumentParameters(IReadOnlyList<ColumnModel> filter)
         => string.Join("\n", filter.Select((c, i) =>
-            $"this.SetParameterValue<{ParameterType(c)}>(parameters[{i}], {WriteExpression(c, ArgumentName(c))});"));
+            $"this.SetParameterValue<{ColumnCodec.ParameterType(c)}>(parameters[{i}], {ColumnCodec.WriteExpression(c, ArgumentName(c))});"));
 
     private static string AddParameterStatements(IReadOnlyList<ColumnModel> rowColumns, string offset)
         => string.Join("\n", rowColumns.Select((c, i) =>
-            $"command.Parameters.Add(this.CreateParameter<{ParameterType(c)}>(command, {SqlBatchGenerator.ClassName}.ParameterName({Offset(offset, i)})));"));
+            $"command.Parameters.Add(this.CreateParameter<{ColumnCodec.ParameterType(c)}>(command, {SqlBatchGenerator.ClassName}.ParameterName({Offset(offset, i)})));"));
 
     private static void AddArguments(MethodBuilder method, IReadOnlyList<ColumnModel> arguments)
     {
@@ -578,129 +616,6 @@ while (index < count)
 
     private static string Offset(string offset, int index)
         => offset == "0" ? index.ToString() : index == 0 ? offset : $"{offset} + {index}";
-
-    /// <summary>
-    /// CLR type stored in the database parameter (after unsigned/enum/custom conversion).
-    /// </summary>
-    private static string ParameterType(ColumnModel column)
-    {
-        var type = column.Kind switch
-        {
-            ColumnKind.Boolean => "bool",
-            ColumnKind.Byte or ColumnKind.SByte or ColumnKind.Int16 => "short",
-            ColumnKind.UInt16 or ColumnKind.Int32 => "int",
-            ColumnKind.UInt32 or ColumnKind.Int64 or ColumnKind.UInt64 => "long",
-            ColumnKind.Single => "float",
-            ColumnKind.Double => "double",
-            ColumnKind.Decimal => "decimal",
-            ColumnKind.Guid => "Guid",
-            ColumnKind.DateTime => "DateTime",
-            ColumnKind.DateTimeOffset => "DateTimeOffset",
-            ColumnKind.DateOnly => "DateOnly",
-            ColumnKind.TimeOnly => "TimeOnly",
-            ColumnKind.TimeSpan => "TimeSpan",
-            ColumnKind.Bytes => "byte[]",
-            _ => "string"
-        };
-
-        return column.IsNullable ? type + "?" : type;
-    }
-
-    private static string UnderlyingType(ColumnKind kind) => kind switch
-    {
-        ColumnKind.Byte => "byte",
-        ColumnKind.SByte => "sbyte",
-        ColumnKind.Int16 => "short",
-        ColumnKind.UInt16 => "ushort",
-        ColumnKind.Int32 => "int",
-        ColumnKind.UInt32 => "uint",
-        ColumnKind.Int64 => "long",
-        ColumnKind.UInt64 => "ulong",
-        _ => throw new InvalidOperationException($"{kind} cannot be an enum underlying type")
-    };
-
-    /// <summary>
-    /// Expression converting a non-null property value to its parameter type.
-    /// </summary>
-    private static string ConvertValue(ColumnModel column, string value)
-    {
-        var inner = column.EnumType is null ? value : $"({UnderlyingType(column.Kind)}){value}";
-        return column.Kind switch
-        {
-            ColumnKind.Byte or ColumnKind.SByte => $"(short){inner}",
-            ColumnKind.UInt16 => $"(int){inner}",
-            ColumnKind.UInt32 => $"(long){inner}",
-            ColumnKind.UInt64 => $"unchecked((long){inner})",
-            ColumnKind.Char => $"{value}.ToString()",
-            ColumnKind.DateTimeOffset => $"{value}.ToUniversalTime()",
-            ColumnKind.Custom => $"this.{column.ConvertToName}({value})",
-            _ => inner
-        };
-    }
-
-    private static string WriteExpression(ColumnModel column, string value)
-    {
-        if (!column.IsNullable)
-        {
-            return ConvertValue(column, value);
-        }
-
-        if (column.IsValueType)
-        {
-            var converted = ConvertValue(column, $"{value}.Value");
-            return converted == $"{value}.Value"
-                ? value
-                : $"{value}.HasValue ? ({ParameterType(column)}){converted} : null";
-        }
-
-        var convertedReference = ConvertValue(column, value);
-        return convertedReference == value
-            ? value
-            : $"{value} is null ? null : {convertedReference}";
-    }
-
-    private static string ReadExpression(ColumnModel column, int ordinal)
-    {
-        var read = column.Kind switch
-        {
-            ColumnKind.Boolean => $"reader.GetBoolean({ordinal})",
-            ColumnKind.Byte => $"(byte)reader.GetInt16({ordinal})",
-            ColumnKind.SByte => $"(sbyte)reader.GetInt16({ordinal})",
-            ColumnKind.Int16 => $"reader.GetInt16({ordinal})",
-            ColumnKind.UInt16 => $"(ushort)reader.GetInt32({ordinal})",
-            ColumnKind.Int32 => $"reader.GetInt32({ordinal})",
-            ColumnKind.UInt32 => $"(uint)reader.GetInt64({ordinal})",
-            ColumnKind.Int64 => $"reader.GetInt64({ordinal})",
-            ColumnKind.UInt64 => $"unchecked((ulong)reader.GetInt64({ordinal}))",
-            ColumnKind.Single => $"reader.GetFloat({ordinal})",
-            ColumnKind.Double => $"reader.GetDouble({ordinal})",
-            ColumnKind.Decimal => $"reader.GetDecimal({ordinal})",
-            ColumnKind.Char => $"reader.GetString({ordinal})[0]",
-            ColumnKind.String => $"reader.GetString({ordinal})",
-            ColumnKind.Guid => $"reader.GetGuid({ordinal})",
-            ColumnKind.DateTime => $"reader.GetDateTime({ordinal})",
-            ColumnKind.DateTimeOffset => $"reader.GetFieldValue<DateTimeOffset>({ordinal})",
-            ColumnKind.DateOnly => $"reader.GetFieldValue<DateOnly>({ordinal})",
-            ColumnKind.TimeOnly => $"reader.GetFieldValue<TimeOnly>({ordinal})",
-            ColumnKind.TimeSpan => $"reader.GetFieldValue<TimeSpan>({ordinal})",
-            ColumnKind.Bytes => $"reader.GetFieldValue<byte[]>({ordinal})",
-            _ => $"this.{column.ConvertFromName}(reader.GetString({ordinal}))"
-        };
-
-        if (column.EnumType is not null)
-        {
-            read = $"({column.EnumType})({read})";
-        }
-
-        if (!column.IsNullable)
-        {
-            return read;
-        }
-
-        return column.IsValueType
-            ? $"reader.IsDBNull({ordinal}) ? null : ({column.ValueType}?)({read})"
-            : $"reader.IsDBNull({ordinal}) ? null : {read}";
-    }
 
     private static string ArgumentName(ColumnModel column)
     {

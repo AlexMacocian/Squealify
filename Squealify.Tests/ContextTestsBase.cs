@@ -303,6 +303,129 @@ public abstract class ContextTestsBase
         Assert.HasCount(2, await ToList(unlocks.FindAll()));
     }
 
+    [TestMethod]
+    public async Task InsertIfNotExists_SkipsExistingRows()
+    {
+        var characterId = await this.CreateCharacter("ifnotexists");
+        using var context = this.StorageItems();
+        var first = new StorageItemDbo { CharacterId = characterId, StorageType = StorageType.ItemBag, SlotNo = 1, ItemUId = "first", Num = 1 };
+        var duplicate = new StorageItemDbo { CharacterId = characterId, StorageType = StorageType.ItemBag, SlotNo = 1, ItemUId = "duplicate", Num = 2 };
+
+        Assert.IsTrue(await context.InsertIfNotExists(first, CancellationToken.None));
+        Assert.IsFalse(await context.InsertIfNotExists(duplicate, CancellationToken.None));
+        var rows = Enumerable.Range(0, 70)
+            .Select(i => new StorageItemDbo { CharacterId = characterId, StorageType = StorageType.ItemBag, SlotNo = (ushort)i, ItemUId = $"item{i}", Num = (uint)i })
+            .ToList();
+        var inserted = await context.InsertIfNotExistsMany(rows, CancellationToken.None);
+
+        Assert.AreEqual(69, inserted);
+        var stored = await context.Find(characterId, StorageType.ItemBag, 1, CancellationToken.None);
+        Assert.AreEqual("first", stored!.ItemUId);
+    }
+
+    [TestMethod]
+    public async Task SqlQuery_ObjectRows_MapColumnsByName()
+    {
+        var accountId = await this.CreateAccount("summaries");
+        using (var accounts = this.Accounts())
+        {
+            await accounts.Update(new AccountDbo { Id = accountId, Name = "summaries", Email = "mail@example.com" }, CancellationToken.None);
+        }
+
+        using var characters = this.Characters();
+        var first = await characters.Insert(new CharacterDbo { AccountId = accountId, FirstName = "A", LastName = "1", GameMode = 2 }, CancellationToken.None);
+        var second = await characters.Insert(new CharacterDbo { AccountId = accountId, FirstName = "B", LastName = "2", GameMode = 2 }, CancellationToken.None);
+        using var queries = this.Queries();
+
+        var summaries = queries.FindSummaries(accountId);
+        var asyncSummaries = await queries.FindSummariesAsync(accountId, CancellationToken.None);
+        var single = queries.FindSummary(second);
+        var missing = queries.FindSummary(-1);
+        var byGameMode = characters.FindByGameModeOrdered(2);
+
+        Assert.HasCount(2, summaries);
+        Assert.AreEqual(first, summaries[0].Id);
+        Assert.AreEqual("B", summaries[1].FirstName);
+        Assert.AreEqual("summaries", summaries[1].AccountName);
+        Assert.AreEqual("mail@example.com", summaries[1].Email);
+        Assert.HasCount(2, asyncSummaries);
+        Assert.AreEqual(second, single!.Id);
+        Assert.IsNull(single.AccountName);
+        Assert.AreEqual("@notAParameter", single.Email);
+        Assert.IsNull(missing);
+        CollectionAssert.AreEqual(new[] { first, second }, byGameMode.Select(c => c.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task SqlQuery_ScalarsAndTuples()
+    {
+        var accountId = await this.CreateAccount("scalars");
+        var characterId = await this.Characters().Insert(new CharacterDbo { AccountId = accountId, FirstName = "Scalar", LastName = "S", GameMode = 0 }, CancellationToken.None);
+        using (var storage = this.StorageItems())
+        {
+            await storage.Insert(new StorageItemDbo { CharacterId = characterId, StorageType = StorageType.StorageBox, SlotNo = ushort.MaxValue, ItemUId = "u", Num = uint.MaxValue - 5 }, CancellationToken.None);
+        }
+
+        using var queries = this.Queries();
+
+        Assert.AreEqual(1L, queries.CountCharacters(accountId));
+        Assert.AreEqual("Scalar", queries.FindFirstName(characterId));
+        Assert.IsNull(queries.FindFirstName(-1));
+        Assert.AreEqual("scalars", queries.GetAccountName(accountId));
+        Assert.Throws<InvalidOperationException>(() => queries.GetAccountName(-1));
+        Assert.IsTrue(queries.CharacterExists(characterId));
+        Assert.IsFalse(queries.CharacterExists(-1));
+        CollectionAssert.Contains(queries.AllCharacterIds(), characterId);
+        var slot = queries.FindSlots(characterId).Single();
+        Assert.AreEqual(StorageType.StorageBox, slot.StorageType);
+        Assert.AreEqual(ushort.MaxValue, slot.SlotNo);
+        Assert.AreEqual(uint.MaxValue - 5, slot.Num);
+        Assert.AreEqual((StorageType.StorageBox, ushort.MaxValue), queries.FindSlot(characterId, ushort.MaxValue));
+        Assert.IsNull(queries.FindSlot(characterId, 0));
+    }
+
+    [TestMethod]
+    public async Task SqlQuery_Commands_ReturnAffectedRowsAndGeneratedKeys()
+    {
+        var characterId = await this.CreateCharacter("commands");
+        using (var storage = this.StorageItems())
+        {
+            await storage.InsertMany(
+                [
+                    new StorageItemDbo { CharacterId = characterId, StorageType = StorageType.ItemBag, SlotNo = 1, ItemUId = "a", Num = 1 },
+                    new StorageItemDbo { CharacterId = characterId, StorageType = StorageType.ItemBag, SlotNo = 2, ItemUId = "b", Num = 2 }
+                ],
+                CancellationToken.None);
+        }
+
+        using var queries = this.Queries();
+
+        Assert.AreEqual(2, queries.AddToAll(characterId, 10));
+        CollectionAssert.AreEqual(new uint[] { 11, 12 }, queries.FindSlots(characterId).Select(s => s.Num).ToArray());
+        await queries.ClearAsync(characterId, CancellationToken.None);
+        Assert.IsEmpty(queries.FindSlots(characterId));
+        var accountId = queries.InsertAccount("returning", null);
+        Assert.AreEqual("returning", queries.GetAccountName(accountId));
+    }
+
+    [TestMethod]
+    public async Task SqlQuery_UsesContextTransaction()
+    {
+        var characterId = await this.CreateCharacter("transaction-query");
+        using var queries = this.Queries();
+        await using (var transaction = await this.connection!.BeginTransactionAsync())
+        {
+            queries.Transaction = transaction;
+            queries.InsertAccount("rolled-back", null);
+            await transaction.RollbackAsync();
+        }
+
+        queries.Transaction = null;
+        Assert.AreEqual(0L, queries.CountCharacters(-1));
+        Assert.IsTrue(queries.CharacterExists(characterId));
+        Assert.IsNull(await this.Accounts().FindByName("rolled-back", CancellationToken.None));
+    }
+
     protected AccountContext Accounts() => new(this.connection!, this.Dialect);
 
     protected CharacterContext Characters() => new(this.connection!, this.Dialect);
@@ -316,6 +439,8 @@ public abstract class ContextTestsBase
     protected AllTypesContext AllTypes() => new(this.connection!, this.Dialect);
 
     protected SequenceContext Sequences() => new(this.connection!, this.Dialect);
+
+    protected GameQueries Queries() => new(this.connection!, this.Dialect);
 
     private async Task<int> CreateAccount(string name)
         => await this.Accounts().Insert(new AccountDbo { Name = name }, CancellationToken.None);

@@ -41,12 +41,75 @@ internal static class Diagnostics
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor InvalidQueryMethod = new(
+        "SQF010",
+        "Invalid [SqlQuery] method",
+        "[SqlQuery] method '{0}' must be a non-static, non-generic partial method without an implementation",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor InvalidQueryContainer = new(
+        "SQF011",
+        "Invalid [SqlQuery] container",
+        "[SqlQuery] method '{0}' must be declared in a non-nested, non-generic partial class inside a namespace",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MissingQueryContext = new(
+        "SQF012",
+        "[SqlQuery] class does not derive from SqlQueryContext",
+        "Class '{0}' declaring [SqlQuery] methods must derive from SqlQueryContext or a generated table context",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor UnsupportedQueryParameter = new(
+        "SQF013",
+        "Unsupported [SqlQuery] parameter",
+        "Parameter '{0}' of '{1}' must be a by-value scalar (primitive, enum, string, byte[], Guid, date or time type) or a CancellationToken",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor UnknownSqlParameter = new(
+        "SQF014",
+        "Unknown SQL parameter",
+        "The SQL of '{0}' references '@{1}', which is not a parameter of the method",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor UnusedQueryParameter = new(
+        "SQF015",
+        "Unused [SqlQuery] parameter",
+        "Parameter '{0}' of '{1}' is not referenced as '@{0}' in its SQL",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor UnsupportedQueryReturn = new(
+        "SQF016",
+        "Unsupported [SqlQuery] return type",
+        "Return type of '{0}' is not supported: {1}",
+        Category,
+        DiagnosticSeverity.Error,
+        true);
+
     private static readonly Dictionary<string, DiagnosticDescriptor> Descriptors = new[]
     {
         MissingPrimaryKey,
         InvalidAutoIncrement,
         UnknownColumn,
-        ForeignKeyColumnMismatch
+        ForeignKeyColumnMismatch,
+        InvalidQueryMethod,
+        InvalidQueryContainer,
+        MissingQueryContext,
+        UnsupportedQueryParameter,
+        UnknownSqlParameter,
+        UnusedQueryParameter,
+        UnsupportedQueryReturn
     }.ToDictionary(d => d.Id);
 
     public static DiagnosticModel Create(DiagnosticDescriptor descriptor, Location? location, params string[] arguments)

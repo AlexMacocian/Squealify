@@ -5,7 +5,7 @@ namespace Squealify;
 /// <summary>
 /// UNIQUE constraint over the given columns; generates a FindBy method returning one row.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = true)]
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = true)]
 public sealed class TableUniqueAttribute(params string[] uniqueFields) : Attribute
 {
     public string[] Uniques { get; } = uniqueFields;
@@ -14,7 +14,7 @@ public sealed class TableUniqueAttribute(params string[] uniqueFields) : Attribu
 /// <summary>
 /// Index over the given columns; generates FindBy (all matching rows) and DeleteBy methods.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = true)]
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = true)]
 public sealed class TableIndexAttribute(params string[] columns) : Attribute
 {
     public string[] Columns { get; } = columns;
@@ -23,7 +23,7 @@ public sealed class TableIndexAttribute(params string[] columns) : Attribute
 /// <summary>
 /// Generates FindBy and DeleteBy methods over the given columns without creating an index.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = true)]
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = true)]
 public sealed class TableQueryAttribute(params string[] columns) : Attribute
 {
     public string[] Columns { get; } = columns;
@@ -32,7 +32,7 @@ public sealed class TableQueryAttribute(params string[] columns) : Attribute
 /// <summary>
 /// Composite foreign key.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = true)]
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = true)]
 public sealed class TableForeignKeyAttribute(string referenceTable, string[] columns, string[] referenceColumns) : Attribute
 {
     public string ReferenceTable { get; } = referenceTable;

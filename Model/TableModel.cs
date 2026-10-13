@@ -56,10 +56,11 @@ internal sealed record TableModel(
     string HintName,
     string ContextName,
     string DboType,
+    bool IsValueType,
     string TableName,
     EquatableArray<ColumnModel> Columns,
     EquatableArray<KeySetModel> KeySets,
     EquatableArray<ForeignKeyModel> ForeignKeys,
     EquatableArray<DiagnosticModel> Diagnostics);
 
-internal sealed record GenerationOptions(bool FileScopedNamespace);
+internal sealed record GenerationOptions(bool FileScopedNamespace, bool Synchronous, string? ContextBase);

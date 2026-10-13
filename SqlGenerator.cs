@@ -121,6 +121,8 @@ internal sealed class SqlGenerator(TableModel table)
         return $"\nON CONFLICT ({ColumnList(keys)}) DO UPDATE SET\n    {assignments};";
     }
 
+    public string DoNothingTail() => "\nON CONFLICT DO NOTHING;";
+
     /// <summary>
     /// Parameters: the given columns, in order. Returns the auto increment column.
     /// </summary>

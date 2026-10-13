@@ -3,9 +3,10 @@ using System;
 namespace Squealify;
 
 /// <summary>
-/// Marks a class as a table. Squealify generates a {Class}TableContextBase for it.
+/// Marks a class or struct as a table. Squealify generates a {Type}TableContextBase for it.
+/// Columns are the public instance properties with a getter and a setter, and the public mutable instance fields.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = false)]
 public sealed class TableAttribute : Attribute
 {
     public TableAttribute()
@@ -19,4 +20,9 @@ public sealed class TableAttribute : Attribute
     }
 
     public string Name { get; }
+
+    /// <summary>
+    /// Column names of members without <see cref="ColumnNameAttribute"/>.
+    /// </summary>
+    public ColumnNaming Naming { get; set; }
 }

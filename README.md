@@ -1,8 +1,8 @@
 # Squealify
 
-Compile-time micro-ORM for ADO.NET. A source generator turns schema classes into table contexts with SQL and row mapping generated at build time. No reflection, NativeAOT compatible.
+Compile-time micro-ORM for ADO.NET. Source generators turn schema classes and structs into table contexts, and `[SqlQuery]` partial methods into implementations, with SQL and row mapping generated at build time. No reflection, NativeAOT compatible.
 
-The package contains the generator (`analyzers/`) and `Squealify.Abstractions` (`lib/`), which holds the attributes and enums shared by all consuming assemblies.
+The package contains the generators (`analyzers/`) and `Squealify.Abstractions` (`lib/`), which holds the attributes, enums and the `SqlQueryContext` base class shared by all consuming assemblies.
 
 ## Installation
 
@@ -44,19 +44,23 @@ await foreach (var c in characters.FindByAccountIdAndGameMode(1, 0, cancellation
 
 | Attribute | Target | Effect |
 |---|---|---|
-| `[Table(name)]` | class | Table name (defaults to the class name) |
-| `[PrimaryKey]` | property | Primary key column; multiple properties form a composite key |
-| `[AutoIncrement]` | property | Database generated key; single `int`/`long` primary key only |
-| `[ColumnName(name)]` | property | Column name (defaults to the property name) |
-| `[ColumnUnique]` | property | `UNIQUE` column; generates `FindBy{Column}` returning one row |
-| `[Varchar(length)]` | property | `VARCHAR(length)` instead of `TEXT` |
-| `[ForeignKey(table, column, OnDelete = ...)]` | property | Single column foreign key |
-| `[TableForeignKey(table, columns, referenceColumns, OnDelete = ...)]` | class | Composite foreign key |
-| `[TableUnique(columns...)]` | class | `UNIQUE` constraint; generates `FindBy{Columns}` returning one row |
-| `[TableIndex(columns...)]` | class | Index; generates `FindBy{Columns}` (all rows) and `DeleteBy{Columns}` |
-| `[TableQuery(columns...)]` | class | `FindBy{Columns}` and `DeleteBy{Columns}` without an index (e.g. primary key prefixes) |
+| `[Table(name, Naming = ...)]` | class, struct | Table name (defaults to the type name); `ColumnNaming.SnakeCase` derives `character_id` from `CharacterId` |
+| `[PrimaryKey]` | property, field | Primary key column; multiple members form a composite key |
+| `[AutoIncrement]` | property, field | Database generated key; single `int`/`long` primary key only |
+| `[ColumnName(name)]` | property, field | Column name (overrides `Naming`) |
+| `[ColumnUnique]` | property, field | `UNIQUE` column; generates `FindBy{Column}` returning one row |
+| `[Varchar(length)]` | property, field | `VARCHAR(length)` instead of `TEXT` |
+| `[ForeignKey(table, column, OnDelete = ...)]` | property, field | Single column foreign key |
+| `[TableForeignKey(table, columns, referenceColumns, OnDelete = ...)]` | class, struct | Composite foreign key |
+| `[TableUnique(columns...)]` | class, struct | `UNIQUE` constraint; generates `FindBy{Columns}` returning one row |
+| `[TableIndex(columns...)]` | class, struct | Index; generates `FindBy{Columns}` (all rows) and `DeleteBy{Columns}` |
+| `[TableQuery(columns...)]` | class, struct | `FindBy{Columns}` and `DeleteBy{Columns}` without an index (e.g. primary key prefixes) |
 
-Columns in class level attributes accept property names (`nameof`) or column names.
+| `[SqlQuery(sql, PostgreSql = ...)]` | partial method | Implements the method with the SQL (see [Queries](#queries)) |
+| `[assembly: SquealifyOptions(Synchronous = true)]` | assembly | Synchronous table contexts (see [Synchronous mode](#synchronous-mode)) |
+| `[assembly: SquealifyOptions(ContextBase = typeof(T))]` | assembly | Base class of generated table contexts; `T` derives from `SqlQueryContext` and has a `(DbConnection, SqlDialect)` constructor (e.g. to override `CreateParameter<T>` once for all tables) |
+
+Columns are public instance properties with a getter and a setter, and public mutable instance fields. Columns in type level attributes accept member names (`nameof`) or column names.
 
 ## Generated members
 
@@ -64,16 +68,76 @@ Columns in class level attributes accept property names (`nameof`) or column nam
 |---|---|
 | `CreateTable`, `CreateTableIfNotExists` | DDL for the context's `SqlDialect`, including indexes |
 | `Insert`, `InsertMany` | `Insert` returns the generated key for `[AutoIncrement]` tables |
+| `InsertIfNotExists`, `InsertIfNotExistsMany` | `INSERT ... ON CONFLICT DO NOTHING`; return whether / how many rows were inserted |
 | `Upsert`, `UpsertMany` | `INSERT ... ON CONFLICT (primary key) DO UPDATE` (`DO NOTHING` for key-only tables) |
 | `Update`, `UpdateMany` | Returns affected rows; not generated for key-only tables |
 | `Delete(keys...)`, `DeleteMany`, `DeleteAll` | Returns affected rows |
 | `Find(keys...)`, `FindAll` | |
 | `FindBy...`, `DeleteBy...` | From `[ColumnUnique]`, `[TableUnique]`, `[TableIndex]`, `[TableQuery]` |
-| `ReadRow`, `CreateCommand`, `TableName`, `SelectColumns` | For custom queries in the derived context |
+| `ReadRow`, `TableName`, `SelectColumns` | For custom queries in the derived context |
+
+Table contexts derive from `SqlQueryContext` (or the configured `ContextBase`):
+
+| Member | Notes |
+|---|---|
 | `Transaction` | Assigned to every command the context executes |
+| `Dialect` | `SqlDialect.SQLite` or `SqlDialect.PostgreSQL` |
+| `CreateCommand`, `CreateCachedCommand` | Commands for custom code; cached commands are disposed with the context |
 | `CreateParameter<T>`, `SetParameterValue<T>` | Virtual; override to use typed provider parameters |
 
-Contexts implement `IDisposable` and `IAsyncDisposable`, own their cached commands, and are not thread safe (one per connection).
+Contexts implement `IDisposable` (and `IAsyncDisposable` in asynchronous mode), own their cached commands, and are not thread safe (one per connection).
+
+## Queries
+
+```csharp
+public sealed partial class CharacterQueries(DbConnection connection, SqlDialect dialect) : SqlQueryContext(connection, dialect)
+{
+    [SqlQuery("""
+        SELECT c."Id", c."FirstName", a."Name" AS account_name
+        FROM "characters" c JOIN "accounts" a ON a."Id" = c."AccountId"
+        WHERE c."AccountId" = @accountId
+        """)]
+    public partial List<CharacterSummary> FindSummaries(int accountId);
+
+    [SqlQuery("""SELECT COUNT(*) FROM "characters" WHERE "AccountId" = @accountId""")]
+    public partial ValueTask<long> CountAsync(int accountId, CancellationToken cancellationToken);
+
+    [SqlQuery("""UPDATE "characters" SET "GameMode" = @gameMode WHERE "Id" = @id""")]
+    public partial int SetGameMode(long id, int gameMode);
+}
+```
+
+`[SqlQuery]` methods can also be declared in a class derived from a generated table context.
+
+| Rule | Detail |
+|---|---|
+| Declaring class | Partial, non-nested, non-generic, in a namespace, derived from `SqlQueryContext` or a table context |
+| Parameters | Scalars (see [Type mapping](#type-mapping), except converted types), bound to `@name`; `CancellationToken` is not bound. Every parameter must be used and every `@name` must be a parameter |
+| Query or command | Statements starting with `SELECT`, `WITH`, `VALUES`, `PRAGMA`, `EXPLAIN`, `SHOW`, or containing `RETURNING`, are queries |
+| Synchronous or asynchronous | As declared: `T` or `ValueTask<T>` |
+| `void` | Executes the statement |
+| `int` (command) | Rows affected |
+| Scalar `T` | First column of the first row; throws when there is no row. `T?`: null when there is no row or the value is NULL |
+| Tuple | Columns by position |
+| Class or struct | Public settable members by column name; case and underscores are ignored (`account_name` matches `AccountName`); `[ColumnName]` overrides the name. Ordinals are resolved once per context. A member without a column throws |
+| `List<T>` | All rows of any of the above |
+| `PostgreSql` | Alternative SQL when the context dialect is PostgreSQL |
+| SQL text | Must be a compile time constant that does not reference generated members (e.g. `SelectColumns`) |
+
+One command per method is cached for the lifetime of the context.
+
+## Synchronous mode
+
+`[assembly: SquealifyOptions(Synchronous = true)]` generates synchronous table context methods instead of asynchronous ones:
+
+| Asynchronous | Synchronous |
+|---|---|
+| `ValueTask<T> M(..., CancellationToken)` | `T M(...)` |
+| `IReadOnlyList<T>` rows | `ReadOnlySpan<T>` rows |
+| Struct rows by value | Struct rows by `in` reference |
+| `IAsyncEnumerable<T> FindAll/FindBy...` | `List<T> FindAll/FindBy...(...)` and `void FindAll/FindBy...(..., List<T> results)` |
+
+Combined with struct tables, rows can be kept in reusable arrays and written without allocations from Squealify (providers may still allocate).
 
 ## Performance
 
@@ -119,6 +183,13 @@ Nullable properties (`int?`, `string?`) map to nullable columns.
 | SQF002 | `[AutoIncrement]` is not the single `int`/`long` primary key |
 | SQF003 | Unknown column in a class level attribute |
 | SQF004 | `[TableForeignKey]` column count mismatch |
+| SQF010 | `[SqlQuery]` method is static, generic or not a partial method without implementation |
+| SQF011 | `[SqlQuery]` class is nested, generic, not a class or in the global namespace |
+| SQF012 | `[SqlQuery]` class does not derive from `SqlQueryContext` |
+| SQF013 | Unsupported `[SqlQuery]` parameter type or modifier |
+| SQF014 | SQL references an `@name` that is not a parameter |
+| SQF015 | Parameter not referenced in the SQL |
+| SQF016 | Unsupported `[SqlQuery]` return type |
 
 ## Notes
 
@@ -130,7 +201,14 @@ Nullable properties (`int?`, `string?`) map to nullable columns.
 
 ## Tests
 
-`dotnet test Squealify.Tests` runs against in-memory SQLite. Set `SQUEALIFY_POSTGRESQL` to a connection string of a disposable database to also run the PostgreSQL suite.
+`dotnet test Squealify.slnx` runs `Squealify.Tests` (asynchronous mode) and `Squealify.Tests.Synchronous` (synchronous mode, struct tables) against in-memory SQLite. Set `SQUEALIFY_POSTGRESQL` to a connection string of a disposable database to also run the PostgreSQL suites.
+
+## Upgrading from 0.9
+
+| Change | Action |
+|---|---|
+| Table contexts derive from `SqlQueryContext`; `Dispose(bool)` replaces `Dispose()` overrides | Override `Dispose(bool disposing)` instead |
+| `CreateCommand` is defined in `SqlQueryContext` | No action |
 
 ## Upgrading from 0.8
 
