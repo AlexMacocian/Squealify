@@ -125,6 +125,16 @@ public abstract class SqlQueryContext : IDisposable
     }
 
     /// <summary>
+    /// DateTime values are stored and read as UTC: local times are converted, unspecified times are taken as UTC.
+    /// </summary>
+    public static DateTime ToUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Local => value.ToUniversalTime(),
+        DateTimeKind.Unspecified => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+        _ => value
+    };
+
+    /// <summary>
     /// Lower case, without underscores: <c>character_id</c>, <c>CharacterId</c> and <c>characterId</c> are equal.
     /// </summary>
     public static string NormalizeName(string name)

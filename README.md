@@ -166,7 +166,7 @@ Combined with struct tables, rows can be kept in reusable arrays and written wit
 | `decimal` | `decimal` | `TEXT` | `NUMERIC` |
 | `char`, `string` | `string` | `TEXT` / `VARCHAR(n)` | `TEXT` / `VARCHAR(n)` |
 | `Guid` | `Guid` | `BLOB` | `UUID` |
-| `DateTime` | `DateTime` (UTC expected) | `TEXT` | `TIMESTAMPTZ` |
+| `DateTime` | `DateTime` (UTC: local values converted, unspecified taken as UTC; read with `DateTimeKind.Utc`) | `TEXT` | `TIMESTAMPTZ` |
 | `DateTimeOffset` | `DateTimeOffset` (stored as UTC) | `TEXT` | `TIMESTAMPTZ` |
 | `DateOnly`, `TimeOnly`, `TimeSpan` | same | `TEXT` | `DATE`, `TIME`, `INTERVAL` |
 | `byte[]` | `byte[]` | `BLOB` | `BYTEA` |

@@ -81,7 +81,7 @@ internal static class ColumnCodec
             ColumnKind.Char => $"reader.GetString({ordinal})[0]",
             ColumnKind.String => $"reader.GetString({ordinal})",
             ColumnKind.Guid => $"reader.GetGuid({ordinal})",
-            ColumnKind.DateTime => $"reader.GetDateTime({ordinal})",
+            ColumnKind.DateTime => $"global::Squealify.SqlQueryContext.ToUtc(reader.GetDateTime({ordinal}))",
             ColumnKind.DateTimeOffset => $"reader.GetFieldValue<DateTimeOffset>({ordinal})",
             ColumnKind.DateOnly => $"reader.GetFieldValue<DateOnly>({ordinal})",
             ColumnKind.TimeOnly => $"reader.GetFieldValue<TimeOnly>({ordinal})",
@@ -128,6 +128,7 @@ internal static class ColumnCodec
             ColumnKind.UInt32 => $"(long){inner}",
             ColumnKind.UInt64 => $"unchecked((long){inner})",
             ColumnKind.Char => $"{value}.ToString()",
+            ColumnKind.DateTime => $"global::Squealify.SqlQueryContext.ToUtc({value})",
             ColumnKind.DateTimeOffset => $"{value}.ToUniversalTime()",
             ColumnKind.Custom => $"this.{column.ConvertToName}({value})",
             _ => inner

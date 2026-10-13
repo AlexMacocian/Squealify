@@ -304,6 +304,21 @@ public abstract class ContextTestsBase
     }
 
     [TestMethod]
+    public async Task DateTime_IsStoredAndReadAsUtc()
+    {
+        using var context = this.AllTypes();
+        var expected = CreateAllTypes();
+        var utc = new DateTime(2026, 10, 13, 10, 11, 12, DateTimeKind.Utc);
+        expected.DateTime = utc.ToLocalTime();
+
+        await context.Upsert(expected, CancellationToken.None);
+        var actual = await context.Find(expected.Id, CancellationToken.None);
+
+        Assert.AreEqual(DateTimeKind.Utc, actual!.DateTime.Kind);
+        Assert.AreEqual(utc, actual.DateTime);
+    }
+
+    [TestMethod]
     public async Task InsertIfNotExists_SkipsExistingRows()
     {
         var characterId = await this.CreateCharacter("ifnotexists");
